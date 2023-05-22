@@ -372,7 +372,7 @@ function searchSubstring(inputString: string, searchWords: string): boolean {
         <h1 class="p-index-title">
           <span class="p-index-title__main">Nostr</span>
           <span class="p-index-title__main">Feeds</span>
-          <span class="p-index-title__sub">from relay-jp.nostr.wirednet.jp.</span>
+          <span class="p-index-title__sub">from nostr-relay.nokotaro.com.</span>
         </h1>
         <div class="p-index-intro" v-if="!logined">
           <h2 class="p-index-intro__head">はじめに</h2>
@@ -383,18 +383,8 @@ function searchSubstring(inputString: string, searchWords: string): boolean {
           </p>
           <p class="p-index-intro__text">を参照ください。<br /></p>
           <p class="p-index-intro__text">
-            また、日本向けリレーとしてこのページの裏側にある
-            <code>wss://relay-jp.nostr.wirednet.jp</code> も是非お使いください。
-          </p>
-          <p class="p-index-intro__text">
-            このサイトのソースコードは<a href="https://github.com/imksoo/nostr-global-viewer" class="p-index-intro__text-link"
+            このサイトのソースコードは<a href="https://github.com/nokotaro/nostr-global-viewer" class="p-index-intro__text-link"
               target="_blank">GitHub</a>にあります。
-          </p>
-          <p class="p-index-intro__text">
-            なお、私が管理するNostrリレーの利用規約は
-            <a href="https://relay.nostr.wirednet.jp/index.html" class="p-index-intro__text-link"
-              target="_blank">relay.nostr.wirendet.jp</a>
-            に掲示してあります。
           </p>
         </div>
 
