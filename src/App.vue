@@ -3,7 +3,7 @@ import { ref, watch, nextTick } from "vue";
 import * as nostr from "nostr-tools";
 
 const pool = new nostr.SimplePool();
-const feedRelays = ["wss://relay-jp.nostr.wirednet.jp"];
+const feedRelays = ["wss://nostr-relay.nokotaro.com"];
 let profileRelays = [
   "wss://nos.lol",
   "wss://nostr-pub.wellorder.net",
