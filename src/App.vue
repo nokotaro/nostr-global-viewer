@@ -6,13 +6,10 @@ const pool = new nostr.SimplePool();
 const feedRelays = ["wss://nostr-relay.nokotaro.com"];
 let profileRelays = [
   "wss://nos.lol",
-  "wss://nostr-pub.wellorder.net",
   "wss://nostr-relay.nokotaro.com",
   "wss://nostr.h3z.jp",
   "wss://nostr.holybea.com",
-  "wss://offchain.pub",
   "wss://relay-jp.nostr.wirednet.jp",
-  "wss://relay.austrich.net",
   "wss://relay.current.fyi",
   "wss://relay.damus.io",
   "wss://relay.nostr.band",
