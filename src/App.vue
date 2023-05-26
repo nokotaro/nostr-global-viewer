@@ -15,6 +15,7 @@ let profileRelays = [
   "wss://relay.nostr.band",
   "wss://relay.nostr.wirednet.jp",
   "wss://relay.snort.social",
+  "wss://yabu.me",
 ];
 
 const events = ref(new Array<nostr.Event>());
