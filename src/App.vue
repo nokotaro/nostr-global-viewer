@@ -8,7 +8,6 @@ const feedRelays = ["wss://nostr-relay.nokotaro.com"];
 let profileRelays = [
   "wss://nos.lol",
   "wss://nostr-relay.nokotaro.com",
-  "wss://nostr.h3z.jp",
   "wss://nostr.holybea.com",
   "wss://relay-jp.nostr.wirednet.jp",
   "wss://relay.current.fyi",
