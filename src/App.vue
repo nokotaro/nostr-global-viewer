@@ -7,6 +7,7 @@ const pool = new RelayPool(undefined, { autoReconnect: true, logErrorsAndNotices
 const feedRelays = ["wss://nostr-relay.nokotaro.com"];
 let profileRelays = [
   "wss://nos.lol",
+  "wss://nostr.wine",
   "wss://nostr-relay.nokotaro.com",
   "wss://nostr.holybea.com",
   "wss://relay-jp.nostr.wirednet.jp",
