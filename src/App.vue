@@ -26,7 +26,7 @@ let volume = ref(0.5);
 let searchWords = ref("");
 
 const totalNumberOfEventsToKeep = 2000;
-const countOfDisplayEvents = 100;
+const countOfDisplayEvents = 200;
 
 pool.subscribe([
   {
