@@ -1,9 +1,32 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from "vue";
+import { ref, watch, nextTick, computed } from "vue";
 import * as nostr from "nostr-tools";
 import { RelayPool } from "nostr-relaypool";
+import { useRoute } from "vue-router";
 
-const pool = new RelayPool(undefined, { autoReconnect: true, logErrorsAndNotices: true });
+import RelayStatus from "./components/RelayStatus.vue";
+import FeedProfile from "./components/FeedProfile.vue";
+import FeedReplies from "./components/FeedReplies.vue";
+
+const route = useRoute();
+const sushiMode = computed(() => {
+  return route.query.sushi === "on";
+});
+const mahjongMode = computed(() => {
+  return route.query.mahjong === "on";
+});
+import sushiDataJSON from "./assets/sushiyuki.json";
+import mahjongDataJSON from "./assets/mahjong.json";
+const sushiData = ref(sushiDataJSON);
+const sushiDataLength = sushiData.value.length;
+const mahjongData = ref(mahjongDataJSON);
+const mahjongDataLength = mahjongData.value.length;
+const profileRandom = new Date().getUTCDate() + new Date().getUTCMonth();
+
+const pool = new RelayPool(undefined, {
+  autoReconnect: true,
+  logErrorsAndNotices: true,
+});
 const feedRelays = ["wss://nostr-relay.nokotaro.com"];
 let profileRelays = [
   "wss://nos.lol",
@@ -28,26 +51,27 @@ let searchWords = ref("");
 const totalNumberOfEventsToKeep = 2000;
 const countOfDisplayEvents = 200;
 
-pool.subscribe([
-  {
-    kinds: [1],
-    limit: totalNumberOfEventsToKeep,
-  }],
+pool.subscribe(
+  [
+    {
+      kinds: [1],
+      limit: totalNumberOfEventsToKeep,
+    },
+  ],
   feedRelays,
-  async (ev, isAfterEose, relayURL) => {
-    const now = new Date().getTime();
-    const delay = Math.max(0, ev.created_at * 1000 - now - 30 * 1000);
-    if (delay > 0) {
-      console.log(JSON.stringify({ delay, id: ev.id, created_at: new Date(ev.created_at * 1000) }));
+  async (ev, _isAfterEose, _relayURL) => {
+    eventsToSearch.value.push(ev);
+    eventsToSearch.value.slice(-totalNumberOfEventsToKeep);
+    search();
+    if (
+      !firstFetching &&
+      autoSpeech.value &&
+      events.value.some((obj) => {
+        return obj.id === ev.id;
+      })
+    ) {
+      speakNote(ev);
     }
-    setTimeout(() => {
-      eventsToSearch.value.push(ev);
-      eventsToSearch.value.slice(-totalNumberOfEventsToKeep);
-      search();
-      if (!firstFetching && autoSpeech.value && events.value.some((obj) => { return obj.id === ev.id })) {
-        speakNote(ev);
-      }
-    }, delay);
   },
   undefined,
   async () => {
@@ -70,6 +94,18 @@ function getProfile(pubkey: string): any {
     oldProfileCacheMismatch = true;
     cacheMissHitPubkeys.push(pubkey);
   }
+  const pubkeyNumber = profileRandom + parseInt(pubkey.substring(0, 3), 29);
+  const characters = [...sushiData.value, ...mahjongData.value];
+  if (sushiMode.value && mahjongMode.value) {
+    const randomNumber = pubkeyNumber % (sushiDataLength + mahjongDataLength);
+    return characters[randomNumber];
+  } else if (sushiMode.value) {
+    const randomNumber = pubkeyNumber % (sushiDataLength);
+    return sushiData.value[randomNumber];
+  } else if (mahjongMode.value) {
+    const randomNumber = pubkeyNumber % (mahjongDataLength);
+    return mahjongData.value[randomNumber];
+  }
   return profiles.value.get(pubkey);
 }
 
@@ -87,13 +123,15 @@ async function collectProfiles() {
   }
   cacheMissHitPubkeys.length = 0;
   const pubkeys = Array.from(pubkeySet);
-  const prof = pool.subscribe([
-    {
-      kinds: [0],
-      authors: pubkeys,
-    }],
-    profileRelays,
-    async (ev, isAfterEose, relayURL) => {
+  pool.subscribe(
+    [
+      {
+        kinds: [0],
+        authors: pubkeys,
+      },
+    ],
+    normalizeUrls([...profileRelays, ...myRelays]),
+    async (ev, _isAfterEose, _relayURL) => {
       if (ev.kind === 0) {
         const content = JSON.parse(ev.content);
         if (
@@ -101,12 +139,12 @@ async function collectProfiles() {
           profiles.value.get(ev.pubkey)?.created_at < ev.created_at
         ) {
           const press = {
+            pubkey: ev.pubkey,
             picture: content.picture,
             display_name: content.display_name,
             name: content.name,
             created_at: ev.created_at,
           };
-          // content.created_at = ev.created_at
           profiles.value.set(ev.pubkey, press);
         }
       }
@@ -121,7 +159,8 @@ async function collectProfiles() {
         JSON.stringify(Array.from(profiles.value.entries()))
       );
     },
-    { unsubscribeOnEose: true });
+    { unsubscribeOnEose: true }
+  );
 }
 setInterval(collectProfiles, 1000);
 
@@ -156,10 +195,7 @@ async function speakNote(event: nostr.Event, waitTime: number = 1500) {
         /(?:[\u2700-\u27bf]|(?:\ud83c[\udde6-\uddff]){2}|[\ud800-\udbff][\udc00-\udfff]|[\u0023-\u0039]\ufe0f?\u20e3|\u3299|\u3297|\u303d|\u3030|\u24c2|\ud83c[\udd70-\udd71]|\ud83c[\udd7e-\udd7f]|\ud83c\udd8e|\ud83c[\udd91-\udd9a]|\ud83c[\udde6-\uddff]|[\ud83c[\ude01-\ude02]|\ud83c\ude1a|\ud83c\ude2f|[\ud83c[\ude32-\ude3a]|[\ud83c[\ude50-\ude51]|\u203c|\u2049|[\u25aa-\u25ab]|\u25b6|\u25c0|[\u25fb-\u25fe]|\u00a9|\u00ae|\u2122|\u2139|\ud83c\udc04|[\u2600-\u26FF]|\u2b05|\u2b06|\u2b07|\u2b1b|\u2b1c|\u2b50|\u2b55|\u231a|\u231b|\u2328|\u23cf|[\u23e9-\u23f3]|[\u23f8-\u23fa]|\ud83c\udccf|\u2934|\u2935|[\u2190-\u21ff])/g,
         ""
       )
-      .replace(
-        /nostr:(nprofile|nrelay|nevent|naddr|nsec|npub|note)\S*/g,
-        ""
-      );
+      .replace(/nostr:(nprofile|nrelay|nevent|naddr|nsec|npub|note)\S*/g, "");
 
     const utterContent = new SpeechSynthesisUtterance(utterEventContent);
     if (utterEventContent.match(/[亜-熙ぁ-んァ-ヶ]/)) {
@@ -170,24 +206,6 @@ async function speakNote(event: nostr.Event, waitTime: number = 1500) {
     utterContent.volume = volume.value;
     synth.speak(utterContent);
   }, waitTime);
-}
-
-function getReplyPrevUser(event: nostr.Event): string {
-  const filteredTags = event.tags.filter(([tagType]) => tagType === "p");
-  if (filteredTags.length) {
-    const tags = filteredTags[filteredTags.length - 1];
-    return tags[1];
-  }
-  return "";
-}
-
-function getReplyPrevNote(event: nostr.Event): string {
-  const filteredTags = event.tags.filter(([tagType]) => tagType === "e");
-  if (filteredTags.length) {
-    const tags = filteredTags[filteredTags.length - 1];
-    return tags[1];
-  }
-  return "";
 }
 
 let logined = ref(false);
@@ -202,6 +220,19 @@ async function login() {
   if (myPubkey) {
     logined.value = true;
     collectMyRelay();
+
+    setTimeout(() => {
+      relayStatus.value = pool.getRelayStatuses();
+      pool.subscribe(
+        [{ kinds: [1], "#p": [myPubkey], limit: 1 }],
+        normalizeUrls(myRelays),
+        (ev, _isAfterEose, relayURL) => {
+          if (ev.pubkey !== myPubkey) {
+            console.log("たぶんふぁぼとかりぷらいをもらった", relayURL, ev);
+          }
+        }
+      );
+    }, 1000);
   }
 }
 
@@ -219,13 +250,24 @@ async function post() {
   };
   // @ts-ignore
   event = await window.nostr?.signEvent(event);
-  // @ts-ignore
-  const postStatus = { id: event.id, OK: 0, NG: 0 };
 
   // @ts-ignore
-  pool.publish(event, myRelays);
+  pool.publish(event, normalizeUrls(myRelays));
   isPostOpen.value = false;
   note.value = "";
+
+  // @ts-ignore
+  const ev: nostr.Event = event;
+  pool.subscribe(
+    [{ kinds: [1], ids: [ev.id], limit: 1 }],
+    normalizeUrls(myRelays),
+    (ev, _isAfterEose, relayURL) => {
+      console.log("たぶん投稿に成功した", relayURL, ev);
+    },
+    60 * 1000,
+    undefined,
+    { unsubscribeOnEose: true }
+  );
 }
 
 const noteTextarea = ref<HTMLTextAreaElement | null>(null);
@@ -237,14 +279,16 @@ watch(isPostOpen, async (isPostOpened) => {
 });
 
 async function collectMyRelay() {
-  pool.subscribe([
-    {
-      kinds: [3],
-      authors: [myPubkey],
-      limit: 1,
-    }],
+  pool.subscribe(
+    [
+      {
+        kinds: [3],
+        authors: [myPubkey],
+        limit: 1,
+      },
+    ],
     profileRelays,
-    async (ev, relayURL) => {
+    async (ev, _relayURL) => {
       if (ev.kind === 3 && ev.content && myRelaysCreatedAt < ev.created_at) {
         myRelays.slice(0);
         const content = JSON.parse(ev.content);
@@ -256,7 +300,9 @@ async function collectMyRelay() {
         }
       }
     },
-    undefined
+    undefined,
+    undefined,
+    { unsubscribeOnEose: true }
   );
 }
 
@@ -267,9 +313,6 @@ function checkSend(event: KeyboardEvent) {
 }
 
 function search() {
-  events.value = events.value.filter((e) => {
-    return searchSubstring(e.content, searchWords.value);
-  });
   events.value = eventsToSearch.value.filter((e) => {
     return searchSubstring(e.content, searchWords.value);
   });
@@ -342,8 +385,25 @@ function searchSubstring(inputString: string, searchWords: string): boolean {
   return true;
 }
 
-function getRelayStatuses(): [url: string, status: number][] {
-  return pool.getRelayStatuses();
+let relayStatus = ref(pool.getRelayStatuses());
+setInterval(() => {
+  relayStatus.value = pool.getRelayStatuses();
+}, 1000);
+
+function normalizeUrls(urls: string[]): string[] {
+  return urls.map((url) => {
+    let urlObject = new URL(url);
+    // If there's no pathname, add a slash
+    if (urlObject.pathname === "") {
+      urlObject.pathname = "/";
+    }
+    return urlObject.toString();
+  });
+}
+
+function appVersion() {
+  // @ts-ignore
+  return __APP_VERSION__;
 }
 </script>
 
@@ -352,10 +412,23 @@ function getRelayStatuses(): [url: string, status: number][] {
     <div class="p-index-heading">
       <div class="p-index-heading__inner">
         <h1 class="p-index-title">
-          <span class="p-index-title__main">Nostr</span>
-          <span class="p-index-title__main">Feeds</span>
-          <span class="p-index-title__sub">from nostr-relay.nokotaro.com.</span>
+          <span class="p-index-title__main">Nostr Feeds</span>
+          <span class="p-index-title__sub">From
+            {{
+              feedRelays
+                .map((s) => {
+                  return s.replace(/wss?:\/\/(.*)\//, "$1");
+                })
+                .join(",")
+            }}</span>
+          <span class="p-index-title__sub">Version: {{ appVersion() }}</span>
         </h1>
+        <div class="p-index-signin" v-if="!logined">
+          <h2 class="p-index-signin__head">この画面からつぶやく</h2>
+          <div class="p-index-signin__body">
+            <input class="p-index-signin__btn" type="button" value="NIP-07でログイン" v-on:click="(_$event) => login()" />
+          </div>
+        </div>
         <div class="p-index-intro" v-if="!logined">
           <h2 class="p-index-intro__head">はじめに</h2>
           <p class="p-index-intro__text">Nostrを始めてみたくなった方は</p>
@@ -367,6 +440,12 @@ function getRelayStatuses(): [url: string, status: number][] {
           <p class="p-index-intro__text">
             このサイトのソースコードは<a href="https://github.com/nokotaro/nostr-global-viewer" class="p-index-intro__text-link"
               target="_blank">GitHub</a>にあります。
+          </p>
+          <p class="p-index-intro__text">
+            一部箇所で
+            <a href="https://awayuki.github.io/emojis.html" target="_blank" class="p-index-intro__text-link">SUSHIYUKI
+              emojis (©awayuki)</a>
+            を利用しています。
           </p>
         </div>
 
@@ -392,88 +471,20 @@ function getRelayStatuses(): [url: string, status: number][] {
           </div>
         </div>
 
-        <div class="p-index-relay">
-          <h2 class="p-index-relay__head">リレーの接続状態 (プロフィール取得＆投稿用)</h2>
-          <div class="p-index-relay-status-list">
-            <p v-for="[url, status] in getRelayStatuses()" v-bind:key="url"
-              v-bind:class="'p-index-relay-status-' + status">
-              <span>{{ url }}</span>
-            </p>
-          </div>
-        </div>
-
-        <div class="p-index-signin" v-if="!logined">
-          <h2 class="p-index-signin__head">この画面からつぶやく</h2>
-          <div class="p-index-signin__body">
-            <input class="p-index-signin__btn" type="button" value="NIP-07でログイン" v-on:click="($event) => login()" />
-          </div>
-        </div>
+        <RelayStatus v-bind:relays="relayStatus"></RelayStatus>
       </div>
     </div>
     <div class="p-index-body">
       <div class="p-index-feeds">
         <div v-for="e in events" v-bind:key="nostr.nip19.noteEncode(e.id)" class="c-feed-item">
-          <div class="c-feed-profile">
-            <p class="c-feed-profile__avatar">
-              <img class="c-feed-profile__picture" v-bind:src="getProfile(e.pubkey)?.picture ??
-                'https://placehold.jp/60x60.png'
-                " referrerpolicy="no-referrer" />
-            </p>
-            <a target="_blank" v-bind:href="'https://nostx.shino3.net/' + nostr.nip19.npubEncode(e.pubkey)
-              " class="c-feed-profile__detail">
-              <span class="c-feed-profile__display-name">
-                {{
-                  getProfile(e.pubkey)?.display_name ??
-                  getProfile(e.pubkey)?.name ??
-                  "loading"
-                }}
-              </span>
-              <span class="c-feed-profile__user-name">
-                @{{ getProfile(e.pubkey)?.name ?? "" }}
-              </span>
-            </a>
-          </div>
-          <p class="c-feed-reply" v-if="getReplyPrevUser(e) || getReplyPrevNote(e)">
-            <span v-if="getReplyPrevUser(e)">
-              <a target="_blank" v-bind:href="'https://nostx.shino3.net/' +
-                nostr.nip19.npubEncode(getReplyPrevUser(e))
-                ">
-                <span class="c-feed-reply-profile__display-name">
-                  {{
-                    getProfile(getReplyPrevUser(e))?.display_name ??
-                    getProfile(getReplyPrevUser(e))?.name ??
-                    "loading"
-                  }}
-                </span>
-              </a>
-              の
-            </span>
-            <span v-else>
-              <a target="_blank" v-bind:href="'https://nostx.shino3.net/' + nostr.nip19.npubEncode(e.pubkey)
-                  ">
-                <span class="c-feed-reply-profile__display-name">
-                  {{
-                    getProfile(e.pubkey)?.display_name ??
-                    getProfile(e.pubkey)?.name ??
-                    "loading"
-                  }}
-                </span>
-              </a>
-              の
-            </span>
-            <span v-if="getReplyPrevNote(e)">
-              <a target="_blank" v-bind:href="'https://nostx.shino3.net/' +
-                nostr.nip19.noteEncode(getReplyPrevNote(e))
-                ">投稿</a>
-            </span>
-            への返信
-          </p>
+          <FeedProfile v-bind:profile="getProfile(e.pubkey)"></FeedProfile>
+          <FeedReplies v-bind:event="e" :get-profile="getProfile"></FeedReplies>
           <p class="c-feed-content">
             {{ e.content.replace("\\n", "\n") }}
           </p>
           <div class="c-feed-footer">
             <p class="c-feed-speak">
-              <span @click="($event) => speakNote(e, 0)">
+              <span @click="(_$event) => speakNote(e, 0)">
                 <mdicon name="play" />読み上げ
               </span>
             </p>
@@ -500,29 +511,11 @@ function getRelayStatuses(): [url: string, status: number][] {
           <span class="c-post-cancel__icon">☓</span>
         </button>
       </div>
-      <div class="c-feed-profile">
-        <p class="c-feed-profile__avatar">
-          <img class="c-feed-profile__picture" v-bind:src="getProfile(myPubkey)?.picture ?? 'https://placehold.jp/60x60.png'
-            " referrerpolicy="no-referrer" />
-        </p>
-        <a target="_blank" v-bind:href="'https://nostx.shino3.net/' + nostr.nip19.npubEncode(myPubkey)
-          " class="c-feed-profile__detail">
-          <span class="c-feed-profile__display-name">
-            {{
-              getProfile(myPubkey)?.display_name ??
-              getProfile(myPubkey)?.name ??
-              "loading"
-            }}
-          </span>
-          <span class="c-feed-profile__user-name">
-            @{{ getProfile(myPubkey)?.name ?? "" }}
-          </span>
-        </a>
-      </div>
+      <FeedProfile v-bind:profile="getProfile(myPubkey)"></FeedProfile>
       <div class="p-index-post__editer">
         <div class="p-index-post__textarea">
           <textarea class="i-note" id="note" rows="8" v-model="note" ref="noteTextarea"
-            @keydown.enter="($event) => checkSend($event)" @keydown.esc="($event) => {
+            @keydown.enter="($event) => checkSend($event)" @keydown.esc="(_$event) => {
               isPostOpen = false;
             }
               "></textarea>
