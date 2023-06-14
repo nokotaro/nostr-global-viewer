@@ -4,9 +4,13 @@ import * as nostr from "nostr-tools";
 import { RelayPool } from "nostr-relaypool";
 import { useRoute } from "vue-router";
 
+import sushiDataJSON from "./assets/sushiyuki.json";
+import mahjongDataJSON from "./assets/mahjong.json";
+
 import RelayStatus from "./components/RelayStatus.vue";
 import FeedProfile from "./components/FeedProfile.vue";
 import FeedReplies from "./components/FeedReplies.vue";
+import FeedContent from "./components/FeedContent.vue";
 
 const route = useRoute();
 const sushiMode = computed(() => {
@@ -15,8 +19,6 @@ const sushiMode = computed(() => {
 const mahjongMode = computed(() => {
   return route.query.mahjong === "on";
 });
-import sushiDataJSON from "./assets/sushiyuki.json";
-import mahjongDataJSON from "./assets/mahjong.json";
 const sushiData = ref(sushiDataJSON);
 const sushiDataLength = sushiData.value.length;
 const mahjongData = ref(mahjongDataJSON);
@@ -43,44 +45,109 @@ let profileRelays = [
 
 const events = ref(new Array<nostr.Event>());
 const eventsToSearch = ref(new Array<nostr.Event>());
+
 let firstFetching = true;
 let autoSpeech = ref(false);
 let volume = ref(0.5);
 let searchWords = ref("");
 
-const totalNumberOfEventsToKeep = 2000;
+const totalNumberOfEventsToKeep = 5000;
+const initialNumberOfEventToGet = 500;
 const countOfDisplayEvents = 200;
 
 pool.subscribe(
   [
     {
       kinds: [1],
-      limit: totalNumberOfEventsToKeep,
+      limit: initialNumberOfEventToGet,
     },
   ],
   feedRelays,
-  async (ev, _isAfterEose, _relayURL) => {
-    eventsToSearch.value.push(ev);
-    eventsToSearch.value.slice(-totalNumberOfEventsToKeep);
-    search();
-    if (
-      !firstFetching &&
-      autoSpeech.value &&
-      events.value.some((obj) => {
-        return obj.id === ev.id;
-      })
-    ) {
-      speakNote(ev);
-    }
+  (ev, _isAfterEose, _relayURL) => {
+    addEvent(ev);
   },
   undefined,
-  async () => {
+  () => {
     collectProfiles();
     if (firstFetching) {
       firstFetching = false;
     }
   }
 );
+
+// 823chan
+pool.subscribe(
+  [
+    {
+      kinds: [1],
+      authors: ["3aa38bf663b6c834a04a6542edf14a81d3223e050c3cc9b7479f8c869c432cf2"],
+      limit: 100,
+    },
+  ],
+  ["wss://yabu.me/"],
+  (ev, _isAfterEose, _relayURL) => {
+    addEvent(ev);
+  }
+);
+
+function addEvent(event: nostr.Event): void {
+  eventsToSearch.value.push(event);
+  eventsToSearch.value.slice(-totalNumberOfEventsToKeep);
+  search();
+  if (
+    !firstFetching &&
+    autoSpeech.value &&
+    events.value.some((obj) => {
+      return obj.id === event.id;
+    })
+  ) {
+    speakNote(event);
+  }
+}
+
+let oldEventCacheMismatch = false;
+let cacheMissHitEventIds = new Set<string>();
+
+function getEvent(id: string): nostr.Event {
+  const event = eventsToSearch.value.find((e) => (e.id === id));
+
+  if (!event) {
+    oldEventCacheMismatch = true;
+    cacheMissHitEventIds.add(id);
+    return {
+      id: id,
+      sig: "",
+      kind: 1,
+      tags: [],
+      pubkey: "",
+      content: "",
+      created_at: Math.floor(Date.now() / 1000),
+    };
+  }
+  return event;
+}
+
+function collectEvents() {
+  if (!oldEventCacheMismatch) {
+    return;
+  }
+
+  const eventIds = Array.from(cacheMissHitEventIds);
+  cacheMissHitEventIds.clear();
+
+  pool.subscribe(
+    [
+      {
+        ids: eventIds
+      },
+    ],
+    normalizeUrls([...profileRelays, ...myWriteRelays, ...myReadRelays]),
+    (ev, _isAfterEose, _relayURL) => {
+      addEvent(ev);
+    }
+  );
+}
+setInterval(collectEvents, 1000);
 
 // ローカルストレージからプロフィール情報を読み出しておく
 const profiles = ref(
@@ -93,6 +160,14 @@ function getProfile(pubkey: string): any {
   if (!profiles.value.has(pubkey)) {
     oldProfileCacheMismatch = true;
     cacheMissHitPubkeys.push(pubkey);
+
+    profiles.value.set(pubkey, {
+      pubkey: pubkey,
+      picture: "",
+      display_name: "",
+      name: "",
+      created_at: 0,
+    });
   }
   const pubkeyNumber = profileRandom + parseInt(pubkey.substring(0, 3), 29);
   const characters = [...sushiData.value, ...mahjongData.value];
@@ -109,7 +184,7 @@ function getProfile(pubkey: string): any {
   return profiles.value.get(pubkey);
 }
 
-async function collectProfiles() {
+function collectProfiles() {
   if (!oldProfileCacheMismatch) {
     return;
   }
@@ -130,8 +205,8 @@ async function collectProfiles() {
         authors: pubkeys,
       },
     ],
-    normalizeUrls([...profileRelays, ...myRelays]),
-    async (ev, _isAfterEose, _relayURL) => {
+    normalizeUrls([...profileRelays, ...myWriteRelays]),
+    (ev, _isAfterEose, _relayURL) => {
       if (ev.kind === 0) {
         const content = JSON.parse(ev.content);
         if (
@@ -150,7 +225,7 @@ async function collectProfiles() {
       }
     },
     undefined,
-    async () => {
+    () => {
       oldProfileCacheMismatch = false;
 
       // ローカルストレージにプロフィール情報を保存しておく
@@ -212,7 +287,8 @@ let logined = ref(false);
 let isPostOpen = ref(false);
 let myPubkey = "";
 let myRelaysCreatedAt = 0;
-let myRelays: string[] = [];
+let myReadRelays: string[] = [];
+let myWriteRelays: string[] = [];
 async function login() {
   // @ts-ignore
   myPubkey = (await window.nostr?.getPublicKey()) ?? "";
@@ -224,12 +300,10 @@ async function login() {
     setTimeout(() => {
       relayStatus.value = pool.getRelayStatuses();
       pool.subscribe(
-        [{ kinds: [1], "#p": [myPubkey], limit: 1 }],
-        normalizeUrls(myRelays),
-        (ev, _isAfterEose, relayURL) => {
-          if (ev.pubkey !== myPubkey) {
-            console.log("たぶんふぁぼとかりぷらいをもらった", relayURL, ev);
-          }
+        [{ kinds: [7], "#p": [myPubkey], limit: 10 }],
+        normalizeUrls(myReadRelays),
+        (ev, _isAfterEose, _relayURL) => {
+          addEvent(ev);
         }
       );
     }, 1000);
@@ -252,22 +326,9 @@ async function post() {
   event = await window.nostr?.signEvent(event);
 
   // @ts-ignore
-  pool.publish(event, normalizeUrls(myRelays));
+  pool.publish(event, normalizeUrls(myWriteRelays));
   isPostOpen.value = false;
   note.value = "";
-
-  // @ts-ignore
-  const ev: nostr.Event = event;
-  pool.subscribe(
-    [{ kinds: [1], ids: [ev.id], limit: 1 }],
-    normalizeUrls(myRelays),
-    (ev, _isAfterEose, relayURL) => {
-      console.log("たぶん投稿に成功した", relayURL, ev);
-    },
-    60 * 1000,
-    undefined,
-    { unsubscribeOnEose: true }
-  );
 }
 
 const noteTextarea = ref<HTMLTextAreaElement | null>(null);
@@ -278,7 +339,7 @@ watch(isPostOpen, async (isPostOpened) => {
   }
 });
 
-async function collectMyRelay() {
+function collectMyRelay() {
   pool.subscribe(
     [
       {
@@ -288,14 +349,15 @@ async function collectMyRelay() {
       },
     ],
     profileRelays,
-    async (ev, _relayURL) => {
+    (ev, _relayURL) => {
       if (ev.kind === 3 && ev.content && myRelaysCreatedAt < ev.created_at) {
-        myRelays.slice(0);
+        myWriteRelays.slice(0);
         const content = JSON.parse(ev.content);
         myRelaysCreatedAt = ev.created_at;
         for (const r in content) {
+          myReadRelays.push(r);
           if (content[r].write) {
-            myRelays.push(r);
+            myWriteRelays.push(r);
           }
         }
       }
@@ -478,10 +540,8 @@ function appVersion() {
       <div class="p-index-feeds">
         <div v-for="e in events" v-bind:key="nostr.nip19.noteEncode(e.id)" class="c-feed-item">
           <FeedProfile v-bind:profile="getProfile(e.pubkey)"></FeedProfile>
-          <FeedReplies v-bind:event="e" :get-profile="getProfile"></FeedReplies>
-          <p class="c-feed-content">
-            {{ e.content.replace("\\n", "\n") }}
-          </p>
+          <FeedReplies v-bind:event="e" :get-profile="getProfile" :get-event="getEvent"></FeedReplies>
+          <FeedContent v-bind:event="e" :get-profile="getProfile" :get-event="getEvent"></FeedContent>
           <div class="c-feed-footer">
             <p class="c-feed-speak">
               <span @click="(_$event) => speakNote(e, 0)">
