@@ -24,80 +24,110 @@ for (let i = 0; i < props.event.tags.length; ++i) {
     emojiMap.set(tag[1], tag[2]);
   }
 }
-const words: string[] = props.event.content.split(/(:\w+:|https?:\/\/\S+|nostr:\S+)/g);
-const tokens = words.map(word => {
-  if (!word || word === "nostr:") {
-    return { type: "null" };
-  }
-  if (word.startsWith(":") && word.endsWith(":")) {
-    const emojiName = word.slice(1, -1);
-    if (emojiMap.has(emojiName)) {
-      return { type: "emoji", content: emojiName, src: emojiMap.get(emojiName) };
-    }
-  } else if (word.startsWith("http")) {
-    const url = new URL(word);
-    const ext = url.pathname.split(".").pop()?.toLocaleLowerCase() ?? "";
-    if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'ico', 'bmp', 'webp'].includes(ext)) {
-      return { type: "img", src: word };
+
+const regex = /(:\w+:|https?:\/\/\S+|(nostr:)?(nprofile|nrelay|nevent|naddr|nsec|npub|note)\S+)/;
+
+let rest = props.event.content;
+let tokens: { type: string; content?: any; src?: any; href?: any; id?: string; picture?: any; }[] = [];
+while (rest.length > 0) {
+  const match = rest.match(regex);
+  if (match) {
+    if (match.index > 0) {
+      const text = rest.substring(0, match.index);
+      tokens.push({ type: "text", content: text });
+      rest = rest.substring(match.index);
     } else {
-      return { type: "link", href: word, content: word };
-    }
-  } else if (word.match(/(nostr:|nprofile|nrelay|nevent|naddr|nsec|npub|note)\S+/)) {
-    let data;
-    try {
-      data = Nostr.nip19.decode(word.replace('nostr:', ''));
-    } catch (err) {
-      return { type: "null" }
-    }
-    switch (data.type) {
-      case "nevent": {
-        const href = 'https://nostx.shino3.net/' + Nostr.nip19.noteEncode(data.data.id);
-        const content = "nevent" + data.data.id.substring(data.data.id.length - 8);
-        const event = props.getEvent(data.data.id);
-        return { type: 'nostr-note', content, event, href }
-      }
-      case "note": {
-        const href = 'https://nostx.shino3.net/' + Nostr.nip19.noteEncode(data.data);
-        const content = "note" + data.data.substring(data.data.length - 8);
-        const event = props.getEvent(data.data);
-        return { type: 'nostr-note', content, event, href }
-      }
-      case "nprofile": {
-        const href = 'https://nostx.shino3.net/' + Nostr.nip19.npubEncode(data.data.pubkey);
-        if (props.getProfile) {
-          const profile = props.getProfile(data.data.pubkey);
-          const name = profile.display_name || profile.name || profile.pubkey.substring(profile.pubkey.length - 8)
-          return { type: 'nostr-npub', content: "@" + name, href, picture: profile.picture }
+      const text = match[0];
+      if (text.startsWith(':') && text.endsWith(':')) {
+        const emojiName = text.slice(1, -1);
+        if (emojiMap.has(emojiName)) {
+          tokens.push({ type: "emoji", content: emojiName, src: emojiMap.get(emojiName) });
+        }
+      } else if (text.startsWith('http')) {
+        const url = new URL(text);
+        const ext = url.pathname.split(".").pop()?.toLocaleLowerCase() ?? "";
+        if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'ico', 'bmp', 'webp'].includes(ext)) {
+          tokens.push({ type: "img", src: text });
         } else {
-          return { type: 'nostr', content: word, href }
+          if (url.hostname === "youtu.be") {
+            tokens.push({ type: "youtube", href: url.pathname, content: decodeURI(text) });
+          } else if (url.hostname === "www.youtube.com" || url.hostname === "m.youtube.com") {
+            if (url.pathname.startsWith("/shorts/")) {
+              const v = url.pathname.replace('/shorts/', '');
+              tokens.push({ type: "youtube", href: v, content: decodeURI(text) });
+            } else {
+              const v = getParam('v', text);
+              tokens.push({ type: "youtube", href: v, content: decodeURI(text) });
+            }
+          } else {
+            tokens.push({ type: "link", href: text, content: decodeURI(text) });
+          }
+
+          function getParam(name: string, url: string): string | null {
+            if (!url) url = window.location.href;
+            name = name.replace(/[\[\]]/g, "\\$&");
+            var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"),
+              results = regex.exec(url);
+            if (!results) return null;
+            if (!results[2]) return '';
+            return decodeURIComponent(results[2].replace(/\+/g, " "));
+          }
+        }
+      } else {
+        try {
+          const data = Nostr.nip19.decode(text.replace('nostr:', ''));
+          switch (data.type) {
+            case "nevent": {
+              const href = 'https://nostx.shino3.net/' + Nostr.nip19.noteEncode(data.data.id);
+              const id = data.data.id;
+              tokens.push({ type: 'nostr-note', href, id });
+            } break;
+            case "note": {
+              const href = 'https://nostx.shino3.net/' + Nostr.nip19.noteEncode(data.data);
+              const id = data.data;
+              tokens.push({ type: 'nostr-note', href, id });
+            } break;
+            case "nprofile": {
+              const href = 'https://nostx.shino3.net/' + Nostr.nip19.npubEncode(data.data.pubkey);
+              if (props.getProfile) {
+                const profile = props.getProfile(data.data.pubkey);
+                const name = profile.display_name || profile.name || profile.pubkey.substring(profile.pubkey.length - 8)
+                tokens.push({ type: 'nostr-npub', content: "@" + name, href, picture: profile.picture });
+              } else {
+                tokens.push({ type: 'nostr', content: text, href });
+              }
+            } break;
+            case "npub": {
+              const href = 'https://nostx.shino3.net/' + Nostr.nip19.npubEncode(data.data);
+              if (props.getProfile) {
+                const profile = props.getProfile(data.data);
+                const name = profile.display_name || profile.name || profile.pubkey.substring(profile.pubkey.length - 8)
+                tokens.push({ type: 'nostr-npub', content: "@" + name, href, picture: profile.picture })
+              } else {
+                tokens.push({ type: 'nostr', content: text, href });
+              }
+            } break;
+            default: {
+              const href = text;
+              tokens.push({ type: 'nostr', content: text, href });
+            }
+          }
+        } catch (err) {
+          tokens.push({ type: "text", content: text });
         }
       }
-      case "npub": {
-        const href = 'https://nostx.shino3.net/' + Nostr.nip19.npubEncode(data.data);
-        if (props.getProfile) {
-          const profile = props.getProfile(data.data);
-          const name = profile.display_name || profile.name || profile.pubkey.substring(profile.pubkey.length - 8)
-          return { type: 'nostr-npub', content: "@" + name, href, picture: profile.picture }
-        } else {
-          return { type: 'nostr', content: word, href }
-        }
-      }
-      default: {
-        const href = word;
-        return { type: 'nostr', content: word, href }
-      }
+      rest = rest.substring(text.length);
     }
   } else {
-    return { type: 'text', content: word }
+    const text = rest;
+    tokens.push({ type: "text", content: text });
+    rest = "";
   }
-});
-
+}
 </script>
 <template>
   <p class="c-feed-content">
-    <span style="display: none; color: black;">{{ tokens }}</span>
     <template v-for="(token, index) in tokens" :key="index">
-      <span style="display: none">{{ JSON.stringify(token) }}</span>
       <template v-if="token?.type === 'text'">
         <span v-if="props.event.kind === 7" class="c-feed-content-kind7">{{
           token.content?.replace("+", "💕").replace("-", "👎")
@@ -109,6 +139,12 @@ const tokens = words.map(word => {
           {{ token.content }}
         </a>
       </template>
+      <template v-else-if="token?.type === 'youtube'">
+        <iframe width="560" height="315" :src="'https://www.youtube.com/embed/' + token.href" title="YouTube video player"
+          frameborder="0"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowfullscreen></iframe>
+      </template>
       <template v-else-if="token?.type === 'nostr'">
         <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
           {{ token?.content }}
@@ -116,10 +152,14 @@ const tokens = words.map(word => {
       </template>
       <template v-else-if="token?.type === 'nostr-note'">
         <div class="c-feed-content-repost">
-          <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
-            <FeedContent :event="token.event" :get-event="props.getEvent" :get-profile="props.getProfile"></FeedContent>
-            {{ token?.content }}
-          </a>
+          <FeedContent :event="props.getEvent(token.id)" :get-event="props.getEvent" v-bind:get-profile="props.getProfile"
+            v-if="props.getEvent(token.id).content">
+          </FeedContent>
+          <template v-else>
+            <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
+              {{ token.content }}
+            </a>
+          </template>
         </div>
       </template>
       <template v-else-if="token?.type === 'nostr-npub'">
