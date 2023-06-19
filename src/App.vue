@@ -48,15 +48,22 @@ let profileRelays = [
 
 const events = ref(new Array<nostr.Event>());
 const eventsToSearch = ref(new Array<nostr.Event>());
+const eventsReceived = new Set<string>();
 
 let firstFetching = true;
 let autoSpeech = ref(false);
 let volume = ref(0.5);
 let searchWords = ref("");
+let playActionSound = ref(true);
+
+import actionMP3 from './assets/action.mp3';
+import reactionMP3 from './assets/reaction.mp3';
+const actionSound = new Audio(actionMP3);
+const reactionSound = new Audio(reactionMP3);
 
 const totalNumberOfEventsToKeep = 5000;
 const initialNumberOfEventToGet = 500;
-const countOfDisplayEvents = 200;
+let countOfDisplayEvents = 200;
 
 pool.subscribe(
   [
@@ -66,7 +73,7 @@ pool.subscribe(
     },
   ],
   feedRelays,
-  (ev, _isAfterEose, _relayURL) => {
+  async (ev, _isAfterEose, _relayURL) => {
     addEvent(ev);
   },
   undefined,
@@ -88,13 +95,17 @@ pool.subscribe(
     },
   ],
   ["wss://yabu.me/"],
-  (ev, _isAfterEose, _relayURL) => {
+  async (ev, _isAfterEose, _relayURL) => {
     addEvent(ev);
   }
 );
 
 function addEvent(event: nostr.Event): void {
-  eventsToSearch.value.push(event);
+  if (eventsReceived.has(event.id)) {
+    return;
+  }
+  eventsReceived.add(event.id);
+  eventsToSearch.value = nostr.utils.insertEventIntoDescendingList(eventsToSearch.value, event);
   eventsToSearch.value.slice(-totalNumberOfEventsToKeep);
   search();
   if (
@@ -121,12 +132,12 @@ function getEvent(id: string): nostr.Event | undefined {
   return event;
 }
 
-function collectEvents() {
+async function collectEvents() {
   if (!oldEventCacheMismatch) {
     return;
   }
 
-  const eventIds = Array.from(cacheMissHitEventIds);
+  const eventIds = Array.from(cacheMissHitEventIds).filter((e) => (!eventsReceived.has(e)));
   cacheMissHitEventIds.clear();
 
   pool.subscribe(
@@ -136,9 +147,9 @@ function collectEvents() {
       },
     ],
     normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays, ...myReadRelays]),
-    (ev, _isAfterEose, _relayURL) => {
+    async (ev, _isAfterEose, _relayURL) => {
       addEvent(ev);
-    }
+    },
   );
 }
 setInterval(collectEvents, 1000);
@@ -157,7 +168,7 @@ function getProfile(pubkey: string): any {
 
     profiles.value.set(pubkey, {
       pubkey: pubkey,
-      picture: "",
+      picture: "https://placehold.jp/60x60.png",
       display_name: "",
       name: "",
       created_at: 0,
@@ -178,7 +189,7 @@ function getProfile(pubkey: string): any {
   return profiles.value.get(pubkey);
 }
 
-function collectProfiles() {
+async function collectProfiles() {
   if (!oldProfileCacheMismatch) {
     return;
   }
@@ -200,7 +211,7 @@ function collectProfiles() {
       },
     ],
     normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays, ...myReadRelays]),
-    (ev, _isAfterEose, _relayURL) => {
+    async (ev, _isAfterEose, _relayURL) => {
       if (ev.kind === 0) {
         const content = JSON.parse(ev.content);
         if (
@@ -220,7 +231,7 @@ function collectProfiles() {
       }
     },
     undefined,
-    () => {
+    async () => {
       oldProfileCacheMismatch = false;
 
       // ローカルストレージにプロフィール情報を保存しておく
@@ -285,22 +296,46 @@ let myPubkey = "";
 let myRelaysCreatedAt = 0;
 let myReadRelays: string[] = [];
 let myWriteRelays: string[] = [];
+let firstReactionFetching = true;
+let firstReactionFetchedRelays = 0;
 async function login() {
   // @ts-ignore
   myPubkey = (await window.nostr?.getPublicKey()) ?? "";
 
   if (myPubkey) {
     logined.value = true;
+    countOfDisplayEvents *= 2;
     collectMyRelay();
 
     setTimeout(() => {
       relayStatus.value = pool.getRelayStatuses();
       pool.subscribe([
-        { kinds: [7], "#p": [myPubkey], limit: 10 }
+        { kinds: [6, 7], "#p": [myPubkey], limit: 10 }
       ],
         normalizeUrls(myReadRelays),
-        (ev, _isAfterEose, _relayURL) => {
+        async (ev, _isAfterEose, _relayURL) => {
           addEvent(ev);
+
+          if (
+            !firstReactionFetching &&
+            playActionSound.value &&
+            (ev.kind == 6 || ev.kind == 7) &&
+            reactionSound.paused &&
+            events.value[events.value.length - 1].created_at < ev.created_at
+          ) {
+            console.log("reactioned", ev);
+            reactionSound.currentTime = 0;
+            reactionSound.play();
+          }
+        },
+        undefined,
+        async () => {
+          firstReactionFetchedRelays++;
+          if (firstReactionFetchedRelays > myReadRelays.length / 2) {
+            setTimeout(() => {
+              firstReactionFetching = false;
+            }, 10 * 1000);
+          }
         }
       );
     }, 1000);
@@ -312,12 +347,10 @@ async function post() {
   if (!note) {
     return;
   }
-  let event = {
-    kind: 1,
-    tags: [],
-    content: note.value,
-    created_at: Math.floor(Date.now() / 1000),
-  };
+  let event = nostr.getBlankEvent(nostr.Kind.Text);
+  event.content = note.value;
+  event.created_at = Math.floor(Date.now() / 1000)
+
   // @ts-ignore
   event = await window.nostr?.signEvent(event);
 
@@ -325,6 +358,9 @@ async function post() {
   postEvent(event);
   isPostOpen.value = false;
   note.value = "";
+
+  // @ts-ignore
+  addEvent(event);
 }
 
 async function postEvent(event: nostr.Event) {
@@ -333,6 +369,11 @@ async function postEvent(event: nostr.Event) {
   event = await window.nostr?.signEvent(event);
 
   pool.publish(event, normalizeUrls(myWriteRelays));
+
+  if (playActionSound.value) {
+    actionSound.currentTime = 0;
+    actionSound.play();
+  }
 }
 
 const noteTextarea = ref<HTMLTextAreaElement | null>(null);
@@ -381,20 +422,6 @@ function checkSend(event: KeyboardEvent) {
 function search() {
   events.value = eventsToSearch.value.filter((e) => {
     return searchSubstring(e.content, searchWords.value);
-  });
-  events.value.sort((a, b) => {
-    return a.created_at === b.created_at
-      ? a.id === b.id
-        ? 0
-        : a.id < b.id
-          ? 1
-          : -1
-      : a.created_at < b.created_at
-        ? 1
-        : -1;
-  });
-  events.value = events.value.filter((event, index, array) => {
-    return index === 0 || event.id !== array[index - 1].id;
   });
   events.value = events.value.slice(0, countOfDisplayEvents);
   if (events.value.length === 0) {
@@ -457,14 +484,7 @@ setInterval(() => {
 }, 1000);
 
 function normalizeUrls(urls: string[]): string[] {
-  return urls.map((url) => {
-    let urlObject = new URL(url);
-    // If there's no pathname, add a slash
-    if (urlObject.pathname === "") {
-      urlObject.pathname = "/";
-    }
-    return urlObject.toString();
-  });
+  return urls.map((url) => (nostr.utils.normalizeURL(url)));
 }
 
 function appVersion() {
@@ -516,10 +536,10 @@ setInterval(loggingStatistics, 30 * 1000);
               target="_blank">GitHub</a>にあります。
           </p>
           <p class="p-index-intro__text">
-            一部箇所で
             <a href="https://awayuki.github.io/emojis.html" target="_blank" class="p-index-intro__text-link">SUSHIYUKI
-              emojis (©awayuki)</a>
-            を利用しています。
+              emojis (©awayuki)</a> の絵文字素材や
+            <a href="https://soundeffect-lab.info/" target="_blank" class="p-index-intro__text-link">効果音ラボ</a>
+            の効果音素材を利用しています。
           </p>
         </div>
 
@@ -538,6 +558,17 @@ setInterval(loggingStatistics, 30 * 1000);
           </div>
         </div>
 
+        <div class="p-index-speech">
+          <h2 class="p-index-speech__head">効果音</h2>
+          <div class="p-index-speech__body">
+            <label class="p-index-speech-cb" for="sound">
+              <input class="p-index-speech-cb__input" type="checkbox" id="sound" v-model="playActionSound" />
+              <span class="p-index-speech-cb__dummy"></span>
+              <span class="p-index-speech-cb__text-label">効果音を鳴らす</span>
+            </label>
+          </div>
+        </div>
+
         <div class="p-index-search">
           <h2 class="p-index-search__head">フィルタ</h2>
           <div class="p-index-search__body">
@@ -553,7 +584,8 @@ setInterval(loggingStatistics, 30 * 1000);
         <div v-for="e in events" v-bind:key="nostr.nip19.noteEncode(e.id)" class="c-feed-item">
           <FeedProfile v-bind:profile="getProfile(e.pubkey)"></FeedProfile>
           <FeedReplies v-bind:event="e" :get-profile="getProfile" :get-event="getEvent" v-if="e.kind !== 6"></FeedReplies>
-          <FeedContent v-bind:event="e" :get-profile="getProfile" :get-event="getEvent"></FeedContent>
+          <FeedContent v-bind:event="e" :get-profile="getProfile" :get-event="getEvent" :speak-note="speakNote"
+            :is-logined="logined" :post-event="postEvent"></FeedContent>
           <FeedFooter v-bind:event="e" :speak-note="speakNote" :is-logined="logined" :post-event="postEvent"></FeedFooter>
         </div>
       </div>
