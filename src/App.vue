@@ -11,6 +11,7 @@ import RelayStatus from "./components/RelayStatus.vue";
 import FeedProfile from "./components/FeedProfile.vue";
 import FeedReplies from "./components/FeedReplies.vue";
 import FeedContent from "./components/FeedContent.vue";
+import FeedFooter from "./components/FeedFooter.vue";
 
 const route = useRoute();
 const sushiMode = computed(() => {
@@ -28,6 +29,8 @@ const profileRandom = new Date().getUTCDate() + new Date().getUTCMonth();
 const pool = new RelayPool(undefined, {
   autoReconnect: true,
   logErrorsAndNotices: true,
+  subscriptionCache: true,
+  useEventCache: true,
 });
 const feedRelays = ["wss://nostr-relay.nokotaro.com"];
 let profileRelays = [
@@ -58,7 +61,7 @@ const countOfDisplayEvents = 200;
 pool.subscribe(
   [
     {
-      kinds: [1, 7],
+      kinds: [1, 6],
       limit: initialNumberOfEventToGet,
     },
   ],
@@ -108,21 +111,12 @@ function addEvent(event: nostr.Event): void {
 let oldEventCacheMismatch = false;
 let cacheMissHitEventIds = new Set<string>();
 
-function getEvent(id: string): nostr.Event {
+function getEvent(id: string): nostr.Event | undefined {
   const event = eventsToSearch.value.find((e) => (e.id === id));
 
   if (!event) {
     oldEventCacheMismatch = true;
     cacheMissHitEventIds.add(id);
-    return {
-      id: id,
-      sig: "",
-      kind: 1,
-      tags: [],
-      pubkey: "",
-      content: "",
-      created_at: Math.floor(Date.now() / 1000),
-    };
   }
   return event;
 }
@@ -141,7 +135,7 @@ function collectEvents() {
         ids: eventIds
       },
     ],
-    normalizeUrls([...profileRelays, ...myWriteRelays, ...myReadRelays]),
+    normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays, ...myReadRelays]),
     (ev, _isAfterEose, _relayURL) => {
       addEvent(ev);
     }
@@ -205,7 +199,7 @@ function collectProfiles() {
         authors: pubkeys,
       },
     ],
-    normalizeUrls([...profileRelays, ...myWriteRelays]),
+    normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays, ...myReadRelays]),
     (ev, _isAfterEose, _relayURL) => {
       if (ev.kind === 0) {
         const content = JSON.parse(ev.content);
@@ -222,6 +216,7 @@ function collectProfiles() {
           };
           profiles.value.set(ev.pubkey, press);
         }
+        pool.publish(ev, feedRelays);
       }
     },
     undefined,
@@ -229,9 +224,10 @@ function collectProfiles() {
       oldProfileCacheMismatch = false;
 
       // ローカルストレージにプロフィール情報を保存しておく
+      const validProfiles = Array.from(profiles.value.entries()).filter((p) => (p[1].created_at != 0));
       localStorage.setItem(
         "profiles",
-        JSON.stringify(Array.from(profiles.value.entries()))
+        JSON.stringify(validProfiles)
       );
     },
     { unsubscribeOnEose: true }
@@ -299,8 +295,9 @@ async function login() {
 
     setTimeout(() => {
       relayStatus.value = pool.getRelayStatuses();
-      pool.subscribe(
-        [{ kinds: [7], "#p": [myPubkey], limit: 10 }],
+      pool.subscribe([
+        { kinds: [7], "#p": [myPubkey], limit: 10 }
+      ],
         normalizeUrls(myReadRelays),
         (ev, _isAfterEose, _relayURL) => {
           addEvent(ev);
@@ -318,7 +315,6 @@ async function post() {
   let event = {
     kind: 1,
     tags: [],
-    pubkey: myPubkey,
     content: note.value,
     created_at: Math.floor(Date.now() / 1000),
   };
@@ -326,9 +322,17 @@ async function post() {
   event = await window.nostr?.signEvent(event);
 
   // @ts-ignore
-  pool.publish(event, normalizeUrls(myWriteRelays));
+  postEvent(event);
   isPostOpen.value = false;
   note.value = "";
+}
+
+async function postEvent(event: nostr.Event) {
+  event.pubkey = myPubkey;
+  // @ts-ignore
+  event = await window.nostr?.signEvent(event);
+
+  pool.publish(event, normalizeUrls(myWriteRelays));
 }
 
 const noteTextarea = ref<HTMLTextAreaElement | null>(null);
@@ -467,6 +471,14 @@ function appVersion() {
   // @ts-ignore
   return __APP_VERSION__;
 }
+
+function loggingStatistics(): void {
+  console.log({
+    eventsToSearchSize: eventsToSearch.value.length,
+    profilesSize: profiles.value.size,
+  });
+}
+setInterval(loggingStatistics, 30 * 1000);
 </script>
 
 <template>
@@ -540,20 +552,9 @@ function appVersion() {
       <div class="p-index-feeds">
         <div v-for="e in events" v-bind:key="nostr.nip19.noteEncode(e.id)" class="c-feed-item">
           <FeedProfile v-bind:profile="getProfile(e.pubkey)"></FeedProfile>
-          <FeedReplies v-bind:event="e" :get-profile="getProfile" :get-event="getEvent"></FeedReplies>
+          <FeedReplies v-bind:event="e" :get-profile="getProfile" :get-event="getEvent" v-if="e.kind !== 6"></FeedReplies>
           <FeedContent v-bind:event="e" :get-profile="getProfile" :get-event="getEvent"></FeedContent>
-          <div class="c-feed-footer">
-            <p class="c-feed-speak">
-              <span @click="(_$event) => speakNote(e, 0)">
-                <mdicon name="play" />読み上げ
-              </span>
-            </p>
-            <p class="c-feed-date">
-              <a target="_blank" v-bind:href="'https://nostx.shino3.net/' + nostr.nip19.noteEncode(e.id)
-                ">
-                {{ new Date(e.created_at * 1000).toLocaleString() }}</a>
-            </p>
-          </div>
+          <FeedFooter v-bind:event="e" :speak-note="speakNote" :is-logined="logined" :post-event="postEvent"></FeedFooter>
         </div>
       </div>
     </div>
@@ -590,6 +591,13 @@ function appVersion() {
 
 <style lang="scss" scoped>
 @import "./assets/scss/project/index.scss";
-@import "./assets/scss/component/feed.scss";
 @import "./assets/scss/component/post.scss";
+
+.c-feed-item {
+  margin-top: 5px;
+  background-color: #ffffff;
+  border-radius: 4px;
+  box-sizing: border-box;
+  padding: 10px;
+}
 </style>

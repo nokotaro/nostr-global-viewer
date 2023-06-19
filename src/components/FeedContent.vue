@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import * as Nostr from "nostr-tools";
 
+import FeedProfile from "./FeedProfile.vue";
+import FeedFooter from "./FeedFooter.vue";
+
 const props = defineProps({
   event: {
     // @ts-ignore
@@ -25,10 +28,22 @@ for (let i = 0; i < props.event.tags.length; ++i) {
   }
 }
 
-const regex = /(:\w+:|https?:\/\/\S+|(nostr:)?(nprofile|nrelay|nevent|naddr|nsec|npub|note)\S+)/;
+const regex = /(:\w+:|https?:\/\/\S+|(nostr:|@)?(nprofile|nrelay|nevent|naddr|nsec|npub|note)\S+)/;
 
 let rest = props.event.content;
 let tokens: { type: string; content?: any; src?: any; href?: any; id?: string; picture?: any; }[] = [];
+
+if (props.event.kind === 6) {
+  let note = "";
+  for (let i = 0; i < props.event.tags.length; ++i) {
+    const t = props.event.tags[i];
+    if (t[0] === 'e') {
+      note = Nostr.nip19.noteEncode(t[1]);
+    }
+  }
+  rest = `📬りぽすと！ ${note}`;
+}
+
 while (rest.length > 0) {
   const match = rest.match(regex);
   if (match) {
@@ -42,50 +57,58 @@ while (rest.length > 0) {
         const emojiName = text.slice(1, -1);
         if (emojiMap.has(emojiName)) {
           tokens.push({ type: "emoji", content: emojiName, src: emojiMap.get(emojiName) });
+        } else {
+          tokens.push({ type: "text", content: text });
         }
       } else if (text.startsWith('http')) {
-        const url = new URL(text);
-        const ext = url.pathname.split(".").pop()?.toLocaleLowerCase() ?? "";
-        if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'ico', 'bmp', 'webp'].includes(ext)) {
-          tokens.push({ type: "img", src: text });
-        } else {
-          if (url.hostname === "youtu.be") {
-            tokens.push({ type: "youtube", href: url.pathname, content: decodeURI(text) });
-          } else if (url.hostname === "www.youtube.com" || url.hostname === "m.youtube.com") {
-            if (url.pathname.startsWith("/shorts/")) {
-              const v = url.pathname.replace('/shorts/', '');
-              tokens.push({ type: "youtube", href: v, content: decodeURI(text) });
-            } else {
-              const v = getParam('v', text);
-              tokens.push({ type: "youtube", href: v, content: decodeURI(text) });
-            }
+        try {
+          const url = new URL(text);
+          const ext = url.pathname.split(".").pop()?.toLocaleLowerCase() ?? "";
+          if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'ico', 'bmp', 'webp'].includes(ext)) {
+            tokens.push({ type: "img", src: text });
           } else {
-            tokens.push({ type: "link", href: text, content: decodeURI(text) });
-          }
+            if (url.hostname === "youtu.be") {
+              tokens.push({ type: "youtube", href: url.pathname, content: decodeURI(text) });
+            } else if (url.hostname === "www.youtube.com" || url.hostname === "m.youtube.com") {
+              if (url.pathname.startsWith("/shorts/")) {
+                const v = url.pathname.replace('/shorts/', '');
+                tokens.push({ type: "youtube", href: v, content: decodeURI(text) });
+              } else {
+                const v = getParam('v', text);
+                tokens.push({ type: "youtube", href: v, content: decodeURI(text) });
+              }
+            } else if (url.hostname.endsWith("twitter.com")) {
+              tokens.push({ type: "twitter", href: text, src: encodeURI(text), content: decodeURI(text) });
+            } else {
+              tokens.push({ type: "link", href: text, content: decodeURI(text) });
+            }
 
-          function getParam(name: string, url: string): string | null {
-            if (!url) url = window.location.href;
-            name = name.replace(/[\[\]]/g, "\\$&");
-            var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"),
-              results = regex.exec(url);
-            if (!results) return null;
-            if (!results[2]) return '';
-            return decodeURIComponent(results[2].replace(/\+/g, " "));
+            function getParam(name: string, url: string): string | null {
+              if (!url) url = window.location.href;
+              name = name.replace(/[\[\]]/g, "\\$&");
+              var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"),
+                results = regex.exec(url);
+              if (!results) return null;
+              if (!results[2]) return '';
+              return decodeURIComponent(results[2].replace(/\+/g, " "));
+            }
           }
+        } catch (err) {
+          tokens.push({ type: "text", content: text });
         }
       } else {
         try {
-          const data = Nostr.nip19.decode(text.replace('nostr:', ''));
+          const data = Nostr.nip19.decode(text.replace('nostr:', '').replace('@', ''));
           switch (data.type) {
             case "nevent": {
               const href = 'https://nostx.shino3.net/' + Nostr.nip19.noteEncode(data.data.id);
               const id = data.data.id;
-              tokens.push({ type: 'nostr-note', href, id });
+              tokens.push({ type: 'nostr-note', content: text, href, id });
             } break;
             case "note": {
               const href = 'https://nostx.shino3.net/' + Nostr.nip19.noteEncode(data.data);
               const id = data.data;
-              tokens.push({ type: 'nostr-note', href, id });
+              tokens.push({ type: 'nostr-note', content: text, href, id });
             } break;
             case "nprofile": {
               const href = 'https://nostx.shino3.net/' + Nostr.nip19.npubEncode(data.data.pubkey);
@@ -127,9 +150,12 @@ while (rest.length > 0) {
 </script>
 <template>
   <p class="c-feed-content">
-    <template v-for="(token, index) in tokens" :key="index">
+    <template v-for="(token, _index) in tokens" :key="_index">
       <template v-if="token?.type === 'text'">
-        <span v-if="props.event.kind === 7" class="c-feed-content-kind7">{{
+        <span class="c-feed-content-kind6" v-if="props.event.kind === 6">{{
+          token.content
+        }}</span>
+        <span class="c-feed-content-kind7" v-else-if="props.event.kind === 7">{{
           token.content?.replace("+", "💕").replace("-", "👎")
         }}</span>
         <span v-else>{{ token.content }}</span>
@@ -140,10 +166,17 @@ while (rest.length > 0) {
         </a>
       </template>
       <template v-else-if="token?.type === 'youtube'">
-        <iframe width="560" height="315" :src="'https://www.youtube.com/embed/' + token.href" title="YouTube video player"
+        <iframe width="300" height="170" :src="'https://www.youtube.com/embed/' + token.href" title="YouTube video player"
           frameborder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
           allowfullscreen></iframe>
+      </template>
+      <template v-else-if="token?.type === 'twitter'">
+        <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
+          {{ token.content }}
+        </a>
+        <br />
+        <iframe frameborder="0" width="330" height="600" :src="'https://twitframe.com/show?url=' + token.src"></iframe>
       </template>
       <template v-else-if="token?.type === 'nostr'">
         <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
@@ -152,9 +185,16 @@ while (rest.length > 0) {
       </template>
       <template v-else-if="token?.type === 'nostr-note'">
         <div class="c-feed-content-repost">
-          <FeedContent :event="props.getEvent(token.id)" :get-event="props.getEvent" v-bind:get-profile="props.getProfile"
-            v-if="props.getEvent(token.id).content">
-          </FeedContent>
+          <template v-if="props.getEvent(token.id)">
+            <FeedProfile v-bind:profile="props.getProfile(props.getEvent(token.id).pubkey)"></FeedProfile>
+            <FeedContent :event="props.getEvent(token.id)" :get-event="props.getEvent"
+              v-bind:get-profile="props.getProfile">
+            </FeedContent>
+            <br />
+            <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
+              {{ 'note' + token.id?.substring(token.id.length - 8) }}
+            </a>
+          </template>
           <template v-else>
             <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
               {{ token.content }}
@@ -188,6 +228,11 @@ while (rest.length > 0) {
   padding: 0.4rem 0 0 0;
   margin: 0;
   color: #213547;
+}
+
+.c-feed-content-kind6 {
+  font-size: 1em;
+  color: #df3d81;
 }
 
 .c-feed-content-kind7 {
