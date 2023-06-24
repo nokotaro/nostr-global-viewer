@@ -13,7 +13,7 @@ function appVersion() {
 </script>
 <template>
         <h1 class="p-index-title">
-          <span class="p-index-title__main">のぞき窓</span>
+          <span class="p-index-title__main">Nostr Feeds</span>
           <span class="p-index-title__sub">From
             {{
               feedRelays
@@ -47,7 +47,7 @@ function appVersion() {
     }
   }
   &__sub {
-    font-size: 1.5rem;
+    font-size: 1.25rem;
     @media screen and (max-width: 880px) {
       font-size: 1.5rem;
       width: 100%;
