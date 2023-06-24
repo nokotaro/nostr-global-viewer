@@ -20,13 +20,30 @@ function getProfileLink(pubkey: string) {
     return ""
   }
 }
+
+function copyNpubId(): void {
+  const text = nostr.nip19.npubEncode(props.profile.pubkey);
+  copyToClipboard(text);
+}
+
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (err) {
+    console.log(err);
+  }
+}
+
 </script>
 <template>
   <div class="c-feed-profile">
-    <p class="c-feed-profile__avatar">
-      <img class="c-feed-profile__picture" v-bind:src="props.profile.picture ?? 'https://placehold.jp/60x60.png'"
-        referrerpolicy="no-referrer" />
-    </p>
+    <a target="_blank" v-bind:href="getProfileLink(props.profile.pubkey)">
+      <p class="c-feed-profile__avatar">
+        <img class="c-feed-profile__picture"
+          v-bind:src="props.profile.picture ? props.profile.picture : 'https://placehold.jp/60x60.png'"
+          referrerpolicy="no-referrer" />
+      </p>
+    </a>
     <a target="_blank" v-bind:href="getProfileLink(props.profile.pubkey)" class="c-feed-profile__detail">
       <span class="c-feed-profile__display-name">
         {{
@@ -39,12 +56,19 @@ function getProfileLink(pubkey: string) {
         @{{ props.profile.name ?? "" }}
       </span>
     </a>
+    <span class="c-feed-profile-copy-button" @click="(_$event) => { copyNpubId(); }">
+      <mdicon name="content-copy" :width="16" :height="16" title="Copy npub string" />
+    </span>
   </div>
 </template>
 <style lang="scss" scoped>
 .c-feed-profile {
   display: flex;
   gap: 10px;
+
+  &-copy-button {
+    color: #213547;
+  }
 }
 
 .c-feed-profile__avatar {

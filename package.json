@@ -1,7 +1,7 @@
 {
   "name": "nostrglobal",
   "private": true,
-  "version": "0.1.39",
+  "version": "0.1.61",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
@@ -13,6 +13,8 @@
   "dependencies": {
     "@mdi/js": "^7.2.96",
     "@types/vue-router": "^2.0.0",
+    "axios": "^1.4.0",
+    "html-dom-parser": "^4.0.0",
     "mdi-vue": "^3.0.13",
     "nostr-relaypool": "^0.6.28",
     "nostr-tools": "^1.12.0",
