@@ -59,7 +59,7 @@ let soundEffect = ref(true);
 
 const totalNumberOfEventsToKeep = 10000;
 const initialNumberOfEventToGet = 500;
-let countOfDisplayEvents = 200;
+let countOfDisplayEvents = 150;
 
 pool.subscribe(
   [
