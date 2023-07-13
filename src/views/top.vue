@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount, ComponentPublicInstance } from "vue";
+import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount, ComponentPublicInstance, reactive } from "vue";
 import * as nostr from "nostr-tools";
 import { RelayPool } from "nostr-relaypool";
 import { useRoute } from "vue-router";
@@ -7,6 +7,7 @@ import { useRoute } from "vue-router";
 import { playActionSound, playRectionSound } from '../hooks/usePlaySound';
 import { getRandomProfile } from '../hooks/useEmojiProfiles';
 import { speakNote } from '../hooks/useSpeakNote';
+import { createFavEvent, createRepostEvent } from '../hooks/useFavRepost';
 
 import IndexTitleControl from "../components/IndexTitleControl.vue";
 import IndexIntroControl from "../components/IndexIntroControl.vue";
@@ -131,6 +132,9 @@ async function collectEvents() {
     async (ev, _isAfterEose, _relayURL) => {
       addEvent(ev);
     },
+    undefined,
+    undefined,
+    { unsubscribeOnEose: true }
   );
 }
 setInterval(collectEvents, 1000);
@@ -401,14 +405,14 @@ watch(isPostOpen, async (isPostOpened) => {
 });
 
 function extractTags() {
-  editingTags.value.tags = [];
-  const regexNostrStr = /@?(nprofile|nrelay|nevent|naddr|nsec|npub|note)1[023456789acdefghjklmnpqrstuvwxyz]{6,}/g
+  editingTags.value.tags.length = 0;
+  const regexNostrStr = /(nostr:|@)(nprofile|nrelay|nevent|naddr|nsec|npub|note)1[023456789acdefghjklmnpqrstuvwxyz]{6,}/g
   const nostrStr = draftEvent.value.content.match(regexNostrStr);
   if (nostrStr?.length) {
     for (let i = 0; i < nostrStr.length; ++i) {
       const ns = nostrStr[i];
       try {
-        const d = nostr.nip19.decode(ns.replace('@', ''));
+        const d = nostr.nip19.decode(ns.replace('nostr:', '').replace('@', ''));
         switch (d.type) {
           case "nevent": {
             editingTags.value.tags.push(['e', d.data.id])
@@ -521,9 +525,15 @@ function normalizeUrls(urls: string[]): string[] {
   return urls.map((url) => (nostr.utils.normalizeURL(url)));
 }
 
+const isFaved = new Set<string>();
+const isReposted = new Set<string>();
+
 function handleKeydownShortcuts(e: KeyboardEvent): void {
   const target = e.target as HTMLElement;
   if (target.tagName.toLowerCase() === 'input' || target.tagName.toLocaleLowerCase() === 'textarea') {
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) {
     return;
   }
   if (e.key === 'n' && logined.value && !isPostOpen.value) {
@@ -534,21 +544,75 @@ function handleKeydownShortcuts(e: KeyboardEvent): void {
     login();
     e.preventDefault();
     e.stopPropagation();
+  } else if (e.key === 'l' && logined.value) {
+    moveToItemById(focusedItemId.value);
+    e.preventDefault();
+    e.stopPropagation();
   } else if (e.key === 'j') {
-    focusItemIndex.value = focusItemIndex.value < events.value.length - 1 ? focusItemIndex.value + 1 : focusItemIndex.value;
-    moveToItemByIndex(focusItemIndex.value);
+    let currentIndex = events.value.findIndex((e) => (e.id === focusedItemId.value));
+    if (currentIndex < 0) {
+      currentIndex = focusItemIndex.value;
+    }
+    const newFocusIndex = currentIndex < events.value.length - 1 ? currentIndex + 1 : events.value.length - 1;
+    moveToItemByIndex(newFocusIndex);
   } else if (e.key === 'k') {
-    focusItemIndex.value = focusItemIndex.value > 0 ? focusItemIndex.value - 1 : 0;
-    moveToItemByIndex(focusItemIndex.value);
+    let currentIndex = events.value.findIndex((e) => (e.id === focusedItemId.value));
+    if (currentIndex < 0) {
+      currentIndex = focusItemIndex.value;
+    }
+    const newFocusIndex = focusItemIndex.value > 0 ? currentIndex - 1 : 0;
+    moveToItemByIndex(newFocusIndex);
   } else if (e.key === 'h') {
-    focusItemIndex.value = 0;
-    moveToItemByIndex(focusItemIndex.value);
+    gotoTop();
+  } else if (e.key === 'g') {
+    focusItemIndex.value = events.value.length - 1;
+    focusedItemId.value = events.value[focusItemIndex.value].id;
+    if (itemsBottom.value) {
+      scrollToItemTop(itemsBottom.value);
+    }
+  } else if (e.key === 'r' && logined.value && !isPostOpen.value) {
+    const targetEvent = events.value.find((e) => (e.id === focusedItemId.value));
+    if (targetEvent && targetEvent.kind === 1) {
+      e.preventDefault();
+      e.stopPropagation();
+      openReplyPost(targetEvent);
+    }
+  } else if (e.key === "f" && logined.value && !isPostOpen.value) {
+    const targetEvent = events.value.find((e) => (e.id === focusedItemId.value));
+    if (targetEvent && targetEvent.kind === 1 && !isFaved.has(targetEvent.id)) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const confirmed = window.confirm(`ふぁぼりますか？\n\n"${targetEvent.content}"`);
+      if (confirmed) {
+        const reaction = createFavEvent(targetEvent) as nostr.Event;
+        reaction.pubkey = myPubkey;
+        postEvent(reaction);
+        isFaved.add(targetEvent.id);
+      }
+    }
+  } else if (e.key === "e" && logined.value && !isPostOpen.value) {
+    const targetEvent = events.value.find((e) => (e.id === focusedItemId.value));
+    if (targetEvent && targetEvent.kind === 1 && !isReposted.has(targetEvent.id)) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const confirmed = window.confirm(`リポストしますか？\n\n"${targetEvent.content}"`);
+      if (confirmed) {
+        const repost = createRepostEvent(targetEvent) as nostr.Event;
+        repost.pubkey = myPubkey;
+        postEvent(repost);
+        isReposted.add(targetEvent.id);
+      }
+    }
   }
 }
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeydownShortcuts);
   Object.values(items.value).forEach((i) => { observer.observe(i as Element) });
 });
+
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydownShortcuts);
   Object.values(items.value).forEach((i) => { observer.unobserve(i as Element) });
@@ -566,7 +630,11 @@ const items = ref<Record<string, HTMLElement>>({});
 const focusItemIndex = ref(0);
 const focusedItemId = ref("");
 const showFocusBorder = ref(false);
+const itemsTop = ref<HTMLElement>();
+const itemsBottom = ref<HTMLElement>();
 let showFocusBorderTimeoutId: NodeJS.Timeout | undefined = undefined;
+
+const itemFooters = ref<Map<string, any>>(new Map());
 
 const observer = new IntersectionObserver((entries) => {
   entries.forEach((entry) => {
@@ -580,17 +648,43 @@ const observer = new IntersectionObserver((entries) => {
 });
 
 function scrollToItem(el: HTMLElement) {
-  const yCoodinate = el.getBoundingClientRect().top + window.pageYOffset - 8;
+  // const offsetY = (window.innerHeight - el.getBoundingClientRect().height) / 2;
+  const offsetY = 80;
+  const yCoodinate = el.getBoundingClientRect().top + window.pageYOffset - offsetY;
   window.scrollTo({ top: yCoodinate, behavior: 'instant' });
 }
 
+function scrollToItemTop(el: HTMLElement) {
+  const yCoodinate = el.getBoundingClientRect().top + window.pageYOffset;
+  window.scrollTo({ top: yCoodinate, behavior: 'instant' });
+}
+
+function moveToItemById(id: string): void {
+  focusedItemId.value = id;
+  focusItemIndex.value = events.value.findIndex((e) => (e.id === focusedItemId.value));;
+  scrollToItem(items.value[id] as HTMLElement);
+
+  showFocusBorder.value = true;
+  clearTimeout(showFocusBorderTimeoutId);
+  showFocusBorderTimeoutId = setTimeout(() => { showFocusBorder.value = false }, 1 * 1000);
+}
+
 function moveToItemByIndex(index: number): void {
+  focusItemIndex.value = index;
   focusedItemId.value = events.value[index].id;
   scrollToItem(items.value[focusedItemId.value] as HTMLElement);
 
   showFocusBorder.value = true;
   clearTimeout(showFocusBorderTimeoutId);
   showFocusBorderTimeoutId = setTimeout(() => { showFocusBorder.value = false }, 1 * 1000);
+}
+
+function gotoTop() {
+  focusItemIndex.value = 0;
+  focusedItemId.value = events.value[0].id;
+  if (itemsTop.value) {
+    scrollToItemTop(itemsTop.value);
+  }
 }
 </script>
 
@@ -607,19 +701,27 @@ function moveToItemByIndex(index: number): void {
       </div>
     </div>
     <div class="p-index-body">
-      <div class="p-index-feeds">
+      <div class="p-index-feeds" :ref="(el) => { itemsTop = el as HTMLElement }">
         <div v-for="e in events" :key="e.id"
           :class="{ 'c-feed-item': true, 'c-feed-item-focused': (showFocusBorder && focusedItemId === e.id) }"
-          :ref="(el) => { if (el) { items[e.id] = el as HTMLElement } }">
+          :ref="(el) => { if (el) { items[e.id] = el as HTMLElement } }"
+          @click="{ focusedItemId = e.id; focusItemIndex = events.findIndex((e) => (e.id === focusedItemId)); console.log(JSON.stringify({ focusedItemId, focusItemIndex })) }">
           <FeedProfile v-bind:profile="getProfile(e.pubkey)"></FeedProfile>
           <FeedReplies v-bind:event="e" :get-profile="getProfile" :get-event="getEvent" v-if="e.kind !== 6"></FeedReplies>
           <FeedContent v-bind:event="e" :get-profile="getProfile" :get-event="getEvent" :speak-note="speakNote"
             :volume="volume" :is-logined="logined" :post-event="postEvent" :open-reply-post="openReplyPost"></FeedContent>
           <FeedFooter v-bind:event="e" :speak-note="speakNote" :volume="volume" :is-logined="logined"
-            :post-event="postEvent" :get-profile="getProfile" :open-reply-post="openReplyPost"></FeedFooter>
+            :post-event="postEvent" :get-profile="getProfile" :open-reply-post="openReplyPost"
+            :ref="(el) => { if (el) { itemFooters?.set(e.id, el) } }"></FeedFooter>
         </div>
       </div>
+      <div :ref="(el) => { itemsBottom = el as HTMLElement }"></div>
     </div>
+  </div>
+  <div class="p-index-top-btn">
+    <button @click="gotoTop()" class="p-index-top-btn__btn">
+      <span class="p-index-top-btn__icon">^</span>
+    </button>
   </div>
   <div class="p-index-post-btn" v-if="logined">
     <button @click="isPostOpen = !isPostOpen" class="p-index-post-btn__btn">
@@ -637,7 +739,8 @@ function moveToItemByIndex(index: number): void {
       <FeedProfile v-bind:profile="getProfile(myPubkey)"></FeedProfile>
       <FeedReplies v-bind:event="draftEvent" :get-profile="getProfile" :get-event="getEvent"></FeedReplies>
       <FeedReplies v-bind:event="editingTags" :get-profile="getProfile" :get-event="getEvent"></FeedReplies>
-      <span class="p-index-post__help">メンションしたいときは@マークの後にnpub文字列を貼り付けてください。<br />引用リポストするときは@noteで投稿IDを貼り付けてください。</span>
+      <span class="p-index-post__help">メンションしたいときは<code>nostr:</code>の後に<code>npub文字列</code>を貼り付けてください。<br />
+        引用リポストするときは<code>nostr:note文字列</code>で投稿IDを貼り付けてください。</span>
       <div class="p-index-post__editer">
         <div class="p-index-post__textarea">
           <textarea class="i-note" id="note" rows="8" v-model="draftEvent.content" ref="noteTextarea"
