@@ -34,31 +34,38 @@ async function copyToClipboard(text: string) {
   }
 }
 
+function onImageError(e: Event) {
+  const placehold = 'https://placehold.jp/60x60.png';
+  const target = e.target as HTMLImageElement;
+  target.src = placehold;
+}
+
 </script>
 <template>
   <div class="c-feed-profile">
-    <a target="_blank" v-bind:href="getProfileLink(props.profile.pubkey)">
+    <a :href="'?' + nostr.nip19.npubEncode(props.profile.pubkey)">
       <p class="c-feed-profile__avatar">
         <img class="c-feed-profile__picture"
           v-bind:src="props.profile.picture ? props.profile.picture : 'https://placehold.jp/60x60.png'"
-          referrerpolicy="no-referrer" />
+          referrerpolicy="no-referrer" @error="onImageError" />
       </p>
     </a>
-    <span class="c-feed-profile-copy-button" @click="(_$event) => { copyNpubId(); }">
-      <mdicon name="content-copy" :width="16" :height="16" title="Copy npub string" />
-    </span>
-    <a target="_blank" v-bind:href="getProfileLink(props.profile.pubkey)" class="c-feed-profile__detail">
-      <span class="c-feed-profile__display-name">
-        {{
-          props.profile.display_name ||
-          props.profile.name ||
-          props.profile.pubkey.substring(props.profile.pubkey.length - 8)
-        }}
-      </span>
-      <span class="c-feed-profile__user-name">
-        @{{ props.profile.name ?? "" }}
-      </span>
+    <a :href="'?' + nostr.nip19.npubEncode(props.profile.pubkey)" class="c-feed-profile__detail">
+      <span class="c-feed-profile__display-name">{{
+        props.profile.display_name ||
+        props.profile.name ||
+        props.profile.pubkey.substring(props.profile.pubkey.length - 8)
+      }}</span>
+      <span class="c-feed-profile__user-name">@{{ props.profile.name ?? "" }}</span>
     </a>
+    <span class="c-feed-profile-copy-button">
+      <a target="_blank" v-bind:href="getProfileLink(props.profile.pubkey)">
+        <mdicon name="open-in-new" :width="14" :height="14" title="Open NosTx" />
+      </a>
+    </span>
+    <span class="c-feed-profile-copy-button" @click="(_$event) => { copyNpubId(); }">
+      <mdicon name="content-copy" :width="14" :height="14" title="Copy npub string" />
+    </span>
   </div>
 </template>
 <style lang="scss" scoped>

@@ -9,8 +9,14 @@ import FeedFooter from "./FeedFooter.vue";
 
 const props = defineProps({
   event: {
-    // @ts-ignore
-    type: Nostr.Event,
+    type: Object as () => {
+      id: string,
+      pubkey: string,
+      kind: number,
+      content: string,
+      tags: string[][],
+      created_at: number
+    },
     required: true,
   },
   getProfile: {
@@ -26,7 +32,7 @@ const props = defineProps({
     required: true,
   },
   volume: {
-    type: Number,
+    type: String,
     required: true,
   },
   isLogined: {
@@ -38,6 +44,18 @@ const props = defineProps({
     required: true,
   },
   openReplyPost: {
+    type: Function,
+    required: true,
+  },
+  openQuotePost: {
+    type: Function,
+    required: true,
+  },
+  addFavEvent: {
+    type: Function,
+    required: true,
+  },
+  addRepostEvent: {
     type: Function,
     required: true,
   },
@@ -90,7 +108,7 @@ for (let i = 0; i < props.event.tags.length; ++i) {
   if (tag[0] === 'content-warning') {
     isHidden.value = true;
     isNIP36.value = true;
-    reasonOfNIP36 = tag[1] ? tag[1] : "Content Warning (NIP36)";
+    reasonOfNIP36.value = tag[1] ? tag[1] : "Content Warning (NIP36)";
   }
 }
 
@@ -111,64 +129,47 @@ if (props.event.kind === 6) {
 }
 
 async function getOgp(url: string, ogp: Ref<{}>) {
-  const res = await axios.get(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
+  try {
+    const res = await axios.get(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
 
-  const dom = parser(res.data.contents);
-  const ogTitleMetaTag = findMetaTag(dom, 'og:title');
-  const ogTitle = (ogTitleMetaTag && ogTitleMetaTag.type === 'tag') ? ogTitleMetaTag.attribs.content : '';
-  const ogImageMetaTag = findMetaTag(dom, 'og:image');
-  const ogImage = (ogImageMetaTag && ogImageMetaTag.type === 'tag') ? ogImageMetaTag.attribs.content : '';
-  const ogDescriptionMetaTag = findMetaTag(dom, 'og:description');
-  const ogDescription = (ogDescriptionMetaTag && ogDescriptionMetaTag.type === 'tag') ? ogDescriptionMetaTag.attribs.content : '';
+    const dom = parser(res.data.contents);
+    const ogTitleMetaTag = findMetaTag(dom, 'og:title');
+    const ogTitle = (ogTitleMetaTag && ogTitleMetaTag.type === 'tag') ? ogTitleMetaTag.attribs.content : '';
+    const ogImageMetaTag = findMetaTag(dom, 'og:image');
+    const ogImage = (ogImageMetaTag && ogImageMetaTag.type === 'tag') ? ogImageMetaTag.attribs.content : '';
+    const ogDescriptionMetaTag = findMetaTag(dom, 'og:description');
+    const ogDescription = (ogDescriptionMetaTag && ogDescriptionMetaTag.type === 'tag') ? ogDescriptionMetaTag.attribs.content : '';
 
-  if (ogTitle) {
-    ogp.value = {
-      title: ogTitle,
-      image: ogImage,
-      description: ogDescription,
-    };
-  }
-
-  // 再帰的にノードを検索する関数
-  function findMetaTag(nodes: any[], property: string): any {
-    for (const node of nodes) {
-      if (node.type === 'tag' && node.attribs && node.attribs.property === property) {
-        return node;
-      }
-      const found = findMetaTag(node.children || [], property);
-      if (found) {
-        return found;
-      }
+    if (ogTitle) {
+      ogp.value = {
+        title: ogTitle,
+        image: ogImage,
+        description: ogDescription,
+      };
     }
-    return null;
-  }
 
-  // 再帰的にContent-TypeかCharsetタグを探して文字コードを特定する関数
-  function findCharset(nodes: any[]): string | null {
-    for (const node of nodes) {
-      if (node.type === 'tag' && node.name === 'meta' && node.attribs && node.attribs.charset) {
-        return node.attribs.charset;
-      } else if (node.type === 'tag' && node.name === 'meta' && node.attribs && node.attribs['http-equiv'] && node.attribs['http-equiv'].toLowerCase() === 'content-type' && node.attribs.content) {
-        const match = node.attribs.content.match(/charset=([^;]*)/i);
-        if (match) {
-          return match[1];
+    // 再帰的にノードを検索する関数
+    function findMetaTag(nodes: any[], property: string): any {
+      for (const node of nodes) {
+        if (node.type === 'tag' && node.attribs && node.attribs.property === property) {
+          return node;
+        }
+        const found = findMetaTag(node.children || [], property);
+        if (found) {
+          return found;
         }
       }
-
-      const found = findCharset(node.children || []);
-      if (found) {
-        return found;
-      }
+      return null;
     }
-    return null;
+  } catch (err) {
+    // console.log(err);
   }
-
 }
 
 while (rest.length > 0) {
   const match = rest.match(regex);
   if (match) {
-    if (match.index > 0) {
+    if (match.index && match.index > 0) {
       const text = rest.substring(0, match.index);
       tokens.value.push({ type: "text", content: text });
       rest = rest.substring(match.index);
@@ -187,6 +188,8 @@ while (rest.length > 0) {
           const ext = url.pathname.split(".").pop()?.toLocaleLowerCase() ?? "";
           if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'ico', 'bmp', 'webp'].includes(ext)) {
             tokens.value.push({ type: "img", src: text });
+          } else if (['mp4', 'webm', 'ogg', 'mov', 'ogv', 'wmv', 'avi'].includes(ext)) {
+            tokens.value.push({ type: "video", src: text });
           } else {
             if (url.hostname === "youtu.be") {
               tokens.value.push({ type: "youtube", href: url.pathname, content: decodeURI(text) });
@@ -277,6 +280,7 @@ while (rest.length > 0) {
     rest = "";
   }
 }
+
 </script>
 <template>
   <button class="c-feed-warning" v-if="isNIP36" @click="($_event) => { isHidden = !isHidden }">
@@ -306,8 +310,7 @@ while (rest.length > 0) {
         </a>
       </template>
       <template v-else-if="token?.type === 'youtube'">
-        <iframe width="90%" height="170" :src="'https://www.youtube.com/embed/' + token.href" title="YouTube video player"
-          frameborder="0"
+        <iframe :src="'https://www.youtube.com/embed/' + token.href" title="YouTube video player" frameborder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
           allowfullscreen></iframe>
       </template>
@@ -316,8 +319,7 @@ while (rest.length > 0) {
           {{ token.content }}
         </a>
         <br />
-        <iframe frameborder="0" width="90%" height="600" :src="'https://twitframe.com/show?url=' + token.src"
-          @load="onIframeLoad"></iframe>
+        <iframe frameborder="0" :src="'https://twitframe.com/show?url=' + token.src" @load="onIframeLoad"></iframe>
       </template>
       <template v-else-if="token?.type === 'nostr'">
         <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
@@ -330,11 +332,14 @@ while (rest.length > 0) {
             <FeedProfile v-bind:profile="props.getProfile(props.getEvent(token.id).pubkey)"></FeedProfile>
             <FeedContent :event="props.getEvent(token.id)" :get-event="props.getEvent" :speak-note="props.speakNote"
               :volume="props.volume" :is-logined="props.isLogined" :post-event="props.postEvent"
-              :get-profile="props.getProfile" :open-reply-post="props.openReplyPost">
+              :get-profile="props.getProfile" :open-reply-post="props.openReplyPost"
+              :open-quote-post="props.openQuotePost" :add-fav-event="props.addFavEvent"
+              :add-repost-event="props.addRepostEvent">
             </FeedContent>
             <FeedFooter v-bind:event="props.getEvent(token.id)" :speak-note="props.speakNote" :volume="volume"
               :is-logined="props.isLogined" :post-event="props.postEvent" :get-profile="props.getProfile"
-              :open-reply-post="props.openReplyPost"></FeedFooter>
+              :open-reply-post="props.openReplyPost" :open-quote-post="props.openQuotePost"
+              :add-fav-event="props.addFavEvent" :add-repost-event="props.addRepostEvent"></FeedFooter>
           </template>
           <template v-else>
             <a :href="token.href" target="_blank" referrerpolicy="no-referrer">
@@ -354,6 +359,9 @@ while (rest.length > 0) {
         <a :href="token.src" target="_blank" referrerpolicy="no-referrer">
           <img :src="token.src" class="c-feed-content-image" referrerpolicy="no-referrer" />
         </a>
+      </template>
+      <template v-else-if="token?.type === 'video'">
+        <video :src="token.src" class="c-feed-content-video" controls="true" preload="metadata" />
       </template>
       <template v-else-if="token?.type === 'emoji'">
         <img :src="token.src" class="c-feed-content-emoji" :alt="token.content" />
@@ -397,7 +405,8 @@ while (rest.length > 0) {
 }
 
 .c-feed-content-ogp-box {
-  display: flex;
+  display: flexbox;
+  overflow: auto;
 }
 
 .c-feed-content-ogp-title {
@@ -407,9 +416,10 @@ while (rest.length > 0) {
 }
 
 .c-feed-content-ogp-image {
+  float: left;
   max-width: 25%;
   max-height: 240px;
-  margin: auto 12px auto 4px;
+  margin: 8px 12px 4px 4px;
 }
 
 .c-feed-content-ogp-description {
@@ -417,6 +427,13 @@ while (rest.length > 0) {
 }
 
 .c-feed-content-image {
+  max-width: 90%;
+  max-height: 600px;
+  display: block;
+  margin: auto;
+}
+
+.c-feed-content-video {
   max-width: 90%;
   max-height: 600px;
   display: block;
