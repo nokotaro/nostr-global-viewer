@@ -731,12 +731,8 @@ function subscribeReactions() {
   relayStatus.value = pool.getRelayStatuses();
 
   pool.subscribe([
-<<<<<<< HEAD
-    { kinds: [1, 6, 7], "#p": [myPubkey], limit: 20 },
-=======
     { kinds: [1, 6, 7], "#p": [myPubkey], limit: countOfDisplayEvents / 10 },
     { kinds: [6, 7], authors: [myPubkey], limit: countOfDisplayEvents / 10 },
->>>>>>> imksoo/main
   ],
     [...new Set(normalizeUrls(myReadRelays))],
     async (ev, _isAfterEose, _relayURL) => {
