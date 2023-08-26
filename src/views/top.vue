@@ -28,11 +28,12 @@ const route = useRoute();
 let sushiMode = ref(false);
 let mahjongMode = ref(false);
 
-const feedRelays = ["wss://nostr-relay.nokotaro.com"];
+const feedRelays = ["wss://nostr-relay-test.nokotaro.work"];
 let profileRelays = [
   "wss://nos.lol",
   "wss://nostr.wine",
   "wss://nostr-relay.nokotaro.com",
+  "wss://nostr-relay-test.nokotaro.work",
   "wss://relay-jp.nostr.wirednet.jp",
   "wss://relay.current.fyi",
   "wss://relay.damus.io",
