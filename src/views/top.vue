@@ -5,6 +5,14 @@ import { RelayPool } from "nostr-relaypool";
 import { NostrFetcher } from "nostr-fetch";
 import { useRoute } from "vue-router";
 
+import { feedRelays, profileRelays, pool, normalizeUrls, NostrEvent, events, eventsToSearch, eventsReceived } from "../store";
+import {
+  myPubkey,
+  myRelaysCreatedAt, myReadRelays, myWriteRelays,
+  myFollows,
+  myBlockCreatedAt, myBlockList, myBlockedEvents,
+} from "../profile";
+
 import { playActionSound, playReactionSound } from '../hooks/usePlaySound';
 import { getRandomProfile } from '../hooks/useEmojiProfiles';
 import { speakNote } from '../hooks/useSpeakNote';
@@ -27,46 +35,6 @@ import HeaderProfile from "../components/HeaderProfile.vue"
 const route = useRoute();
 let sushiMode = ref(false);
 let mahjongMode = ref(false);
-
-const feedRelays = ["wss://nostr-relay.nokotaro.com"];
-let profileRelays = [
-  "wss://nos.lol",
-  "wss://nostr.wine",
-  "wss://nostr-relay.nokotaro.com",
-  "wss://relay-jp.nostr.wirednet.jp",
-  "wss://relay.current.fyi",
-  "wss://relay.damus.io",
-  "wss://relay.nostr.band",
-  "wss://relay.nostr.wirednet.jp",
-  "wss://relay.snort.social",
-  "wss://yabu.me",
-];
-
-const pool = new RelayPool(normalizeUrls(feedRelays), {
-  autoReconnect: true,
-  logErrorsAndNotices: true,
-  subscriptionCache: true,
-  useEventCache: true,
-});
-pool.onerror((url, msg) => { console.log("pool.error", url, msg) });
-pool.onnotice((url, msg) => { console.log("pool.onnotice", url, msg) });
-pool.ondisconnect((url, msg) => { console.log("pool.ondisconnect", url, msg) });
-
-type NostrEvent = {
-  id: string,
-  sig: string,
-  pubkey: string,
-  kind: Nostr.Kind | number,
-  content: string,
-  tags: string[][],
-  created_at: number,
-  isReposted: Boolean | undefined,
-  isFavorited: Boolean | undefined,
-};
-
-const events = ref(new Array<NostrEvent>());
-const eventsToSearch = ref(new Array<NostrEvent>());
-const eventsReceived = ref(new Map<string, NostrEvent>());
 
 let firstFetching = true;
 let autoSpeech = ref(false);
@@ -135,6 +103,9 @@ let npubNextMonth = ref<Date | undefined>();
 let npubDateOrMonth = ref<string>("");
 let npubModeText = ref<string>("");
 let npubProfile = ref();
+let npubKind3Follow = ref();
+let npubKind3Relay = ref();
+let npubKind10002 = ref();
 let cutoffMode = ref<boolean>(true);
 
 let npubRelaysCreatedAt = 0;
@@ -186,16 +157,34 @@ watch(() => route.query, async (newQuery) => {
   }
 
   if (npubId.value) {
+    let profileCreatedAt = 0;
+    let kind3CreatedAt = 0;
+    let kind10002CreatedAt = 0;
     pool.subscribe(
       [{
-        kinds: [0],
-        limit: 1,
+        kinds: [0, 3, 10002],
         authors: [npubId.value]
       }],
-      [...new Set(normalizeUrls([...feedRelays]))],
-      async (ev, _isAfterEose, relayURL) => {
-        const profile = JSON.parse(ev.content);
-        npubProfile.value = profile;
+      [...new Set(normalizeUrls([...feedRelays, ...profileRelays]))],
+      async (ev, _isAfterEose, _relayURL) => {
+        if (ev.kind === 0 && profileCreatedAt < ev.created_at) {
+          profileCreatedAt = ev.created_at;
+          const profile = JSON.parse(ev.content);
+          npubProfile.value = profile;
+        } else if (ev.kind === 3 && kind3CreatedAt < ev.created_at) {
+          kind3CreatedAt = ev.created_at;
+          if (ev.content) {
+            try {
+              npubKind3Relay.value = JSON.parse(ev.content);
+            } catch (err) {
+              console.log(err);
+            }
+          }
+          npubKind3Follow.value = ev.tags;
+        } else if (ev.kind === 10002 && kind10002CreatedAt < ev.created_at) {
+          kind10002CreatedAt = ev.created_at;
+          npubKind10002.value = ev.tags;
+        }
       },
       undefined,
       undefined,
@@ -204,42 +193,71 @@ watch(() => route.query, async (newQuery) => {
   }
 
   if ((!npubId.value && !noteId.value) || (noteId.value) || (npubId.value && npubDateOrMonth.value === "")) {
-    const timelineFilter = (noteId.value) ? {
-      kinds: [1, 6],
-      limit: initialNumberOfEventToGet,
-      ids: [noteId.value],
-    } : (npubId.value) ? {
-      kinds: [1],
-      limit: countOfDisplayEvents,
-      authors: [npubId.value]
-    } : {
-      kinds: [1, 6],
-      limit: initialNumberOfEventToGet,
-    };
-    pool.subscribe(
-      [
-        timelineFilter
-      ],
-      [...new Set(normalizeUrls([...feedRelays]))],
-      async (ev, _isAfterEose, relayURL) => {
-        if (relayURL !== undefined && !feedRelays.includes(relayURL) && !eventsReceived.value.has(ev.id) && ev.content.match(/[亜-熙ぁ-んァ-ヶ]/)) {
-          pool.publish(ev, normalizeUrls(feedRelays));
+    if (noteId.value) {
+      // 指定されたイベントIDに関連する投稿を表示するスレッドモード
+      pool.subscribe(
+        [{
+          kinds: [1, 6],
+          ids: [noteId.value],
+        }, {
+          kinds: [1, 6, 7],
+          '#e': [noteId.value],
+        }],
+        [...new Set(normalizeUrls([...feedRelays]))],
+        async (ev, _isAfterEose, _relayURL) => {
+          addEvent(ev);
+        },
+        undefined,
+        () => {
+          collectProfiles(true);
+          if (firstFetching) {
+            firstFetching = false;
+          }
         }
-
-        addEvent(ev);
-      },
-      undefined,
-      () => {
-        collectProfiles();
-        if (firstFetching) {
-          firstFetching = false;
+      );
+    } else if (npubId.value && npubDateOrMonth.value === "") {
+      // ユーザーの直近の投稿をプレビューするモード
+      pool.subscribe(
+        [{
+          kinds: [1, 6],
+          limit: countOfDisplayEvents / 2,
+          authors: [npubId.value]
+        }],
+        [...new Set(normalizeUrls([...feedRelays]))],
+        async (ev, _isAfterEose, _relayURL) => {
+          addEvent(ev);
+          npubModeText.value = `接続中のリレーから直近の ${events.value.length} 件の投稿を表示しています。(今日へ)`;
+        },
+        undefined,
+        () => {
+          collectProfiles(true);
+          if (firstFetching) {
+            firstFetching = false;
+          }
         }
-      }
-    );
+      );
+    } else {
+      // 通常ののぞき窓グローバルモード
+      pool.subscribe(
+        [{
+          kinds: [1, 6],
+          limit: initialNumberOfEventToGet,
+        }],
+        [...new Set(normalizeUrls([...feedRelays]))],
+        async (ev, _isAfterEose, _relayURL) => {
+          addEvent(ev);
+        },
+        undefined,
+        () => {
+          collectProfiles(true);
+          if (firstFetching) {
+            firstFetching = false;
+          }
+        }
+      );
+    }
 
     if (npubId.value && npubDateOrMonth.value === "") {
-      npubModeText.value = `直近の ${countOfDisplayEvents} 件の投稿を表示しています。(今日へ)`;
-
       let now = new Date();
       now.setHours(0, 0, 0, 0);
       const targetDate = new Date(now.getTime());
@@ -248,6 +266,7 @@ watch(() => route.query, async (newQuery) => {
 
       setupNpubDate(targetDate);
       setupNpubMonth(targetMonth);
+      npubModeText.value = `接続中のリレーから直近の ${countOfDisplayEvents} 件の投稿を表示しています。(今日へ)`;
     }
   } else if (npubId.value) {
     cutoffMode.value = false;
@@ -262,19 +281,49 @@ watch(() => route.query, async (newQuery) => {
     setupNpubDate(targetDate);
     setupNpubMonth(targetMonth);
 
-    let searchRelays = [... new Set([...feedRelays, ...profileRelays, ...myWriteRelays, ...myReadRelays])];
+    let searchRelays = [... new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value]))];
 
+    let since = 0;
+    let until = 0;
     if (npubDateOrMonth.value === "date" && npubDateTomorrow.value) {
-      collectUserDailyEvents(npubId.value, searchRelays, targetDate);
+      since = Math.floor(targetDate.getTime() / 1000) - 1;
+      until = Math.floor(npubDateTomorrow.value.getTime() / 1000) + 1;
+      console.log("npubDate", npubDate.value, npubDateYesterday.value, npubDateTomorrow.value);
     } else if (npubDateOrMonth.value === "month" && npubNextMonth.value) {
-      collectUserMonthlyEvents(npubId.value, searchRelays, targetMonth);
+      since = Math.floor(targetMonth.getTime() / 1000) - 1;
+      until = Math.floor(npubNextMonth.value.getTime() / 1000) + 1;
+      console.log("npubMonth", npubMonth.value, npubPrevMonth.value, npubNextMonth.value);
     }
+
+    const unsub1 = pool.subscribe(
+      [{
+        kinds: [1, 6],
+        authors: [npubId.value],
+        since,
+        until,
+      }],
+      searchRelays,
+      async (ev, _isAfterEose, _relayURL) => {
+        if (since <= ev.created_at && ev.created_at <= until) {
+          addEvent(ev);
+          if (npubDateOrMonth.value === "date") {
+            npubModeText.value = `接続中のリレーから ${targetDate.toLocaleDateString()} の投稿 ${events.value.length} 件 を表示しています。`;
+          } else if (npubDateOrMonth.value === "month") {
+            npubModeText.value = `接続中のリレーから  ${targetMonth.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' })} の投稿 ${events.value.length} 件 を表示しています。(今日へ)`;
+          }
+        }
+      },
+      undefined,
+      undefined
+    );
+    setTimeout(() => { unsub1() }, 60 * 1000);
 
     const unsub2 = pool.subscribe(
       [{ kinds: [3, 10002], authors: [npubId.value], limit: 1 }],
-      [...new Set(normalizeUrls(profileRelays))],
+      [...new Set(normalizeUrls(searchRelays))],
       (ev, _isAfterEose, _relayURL) => {
         if (ev.kind === 3 && ev.content && npubRelaysCreatedAt < ev.created_at) {
+          pool.publish(ev, normalizeUrls(feedRelays));
           npubReadRelays.slice(0);
           npubWriteRelays.slice(0);
           npubRelaysCreatedAt = ev.created_at;
@@ -286,6 +335,7 @@ watch(() => route.query, async (newQuery) => {
             }
           }
         } else if (ev.kind === 10002 && npubRelaysCreatedAt < ev.created_at) {
+          pool.publish(ev, normalizeUrls(feedRelays));
           npubReadRelays.slice(0);
           npubWriteRelays.slice(0);
           npubRelaysCreatedAt = ev.created_at;
@@ -318,7 +368,7 @@ watch(() => route.query, async (newQuery) => {
         let searchRelays = [...npubReadRelays, ...npubWriteRelays];
         collectUserMonthlyEvents(npubId.value, searchRelays, targetMonth);
       }
-    }, 30 * 1000);
+    }, 5 * 1000);
   }
 });
 
@@ -351,7 +401,7 @@ async function collectUserDailyEvents(pubkey: string, relays: string[], targetDa
   const until = Math.floor(nextDay.getTime() / 1000);
 
   collectUserEventsRange(pubkey, relays, since, until, () => {
-    npubModeText.value = `${targetDate.toLocaleDateString()} の投稿 ${events.value.length} 件 を表示しています。(全リレー探索済み)`;
+    npubModeText.value = `複数のリレーから探索した ${targetDate.toLocaleDateString()} の投稿 ${events.value.length} 件 を表示しています。`;
   });
 }
 
@@ -364,16 +414,17 @@ async function collectUserMonthlyEvents(pubkey: string, relays: string[], target
   const until = Math.floor(nextMonth.getTime() / 1000) + 1;
 
   collectUserEventsRange(pubkey, relays, since, until, () => {
-    npubModeText.value = `${targetMonth.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' })} の投稿 ${events.value.length} 件 を表示しています。(全リレー探索済み)(今日へ)`;
+    npubModeText.value = `複数のリレーから探索した ${targetMonth.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' })} の投稿 ${events.value.length} 件 を表示しています。(今日へ)`;
   });
 }
 
+// 指定されたユーザーの指定された範囲のイベントを取得する
 async function collectUserEventsRange(pubkey: string, relays: string[], since: number, until: number, cb: () => void) {
   const profile = getProfile(pubkey);
   const fetcher = NostrFetcher.init();
   const eventsIter = fetcher.allEventsIterator(
     [...new Set(normalizeUrls(relays))],
-    { kinds: [1, 5], authors: [pubkey] },
+    { kinds: [1, 5, 6], authors: [pubkey] },
     { since, until }
   );
 
@@ -388,7 +439,7 @@ async function collectUserEventsRange(pubkey: string, relays: string[], since: n
             cacheBlacklistEventIds.add(t[1]);
           }
         }
-        pool.publish(ev, [...new Set(normalizeUrls([...relays, ...feedRelays, ...myWriteRelays]))]);
+        pool.publish(ev, [...new Set(normalizeUrls([...relays, ...feedRelays, ...myWriteRelays.value]))]);
       } else if (!eventsReceived.value.has(ev.id) && (usertext.match(japaneseRegex) || japaneseUsers.includes(ev.pubkey))) {
         pool.publish(ev, normalizeUrls(feedRelays));
       }
@@ -427,14 +478,14 @@ let cacheMissHitEventIds = new Set<string>();
 let cacheBlacklistEventIds = new Set<string>();
 
 function getEvent(id: string): Nostr.Event | undefined {
-  if (myBlockedEvents.has(id)) {
+  if (myBlockedEvents.value.has(id)) {
     return undefined;
   }
   if (eventsReceived.value.has(id)) {
     const ev = eventsReceived.value.get(id);
     if (ev) {
-      if (myBlockList.includes(ev.pubkey)) {
-        myBlockedEvents.add(ev.id);
+      if (myBlockList.value.includes(ev.pubkey)) {
+        myBlockedEvents.value.add(ev.id);
         console.log("Blocked by pubkey:", ev.pubkey, getProfile(ev.pubkey).display_name, `kind=${ev.kind}`, ev.content);
         return undefined;
       } else {
@@ -462,7 +513,7 @@ async function collectEvents() {
     [{
       ids: eventIds
     }],
-    [...new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays, ...myReadRelays, ...npubReadRelays, ...npubWriteRelays]))],
+    [...new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value, ...npubReadRelays, ...npubWriteRelays]))],
     async (ev, _isAfterEose, relayURL) => {
       cacheMissHitEventIds.delete(ev.id);
       addEvent(ev);
@@ -522,7 +573,7 @@ async function collectProfiles(force = false) {
       kinds: [0],
       authors: pubkeys,
     }],
-    [...new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays, ...myReadRelays]))],
+    [...new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value]))],
     async (ev, _isAfterEose, _relayURL) => {
       if (ev.kind === 0) {
         const content = JSON.parse(ev.content);
@@ -551,7 +602,7 @@ async function collectProfiles(force = false) {
   setTimeout(() => { unsub() }, 2 * 1000);
 }
 setInterval(() => { collectProfiles(false); }, 0.7 * 1000);
-setInterval(() => { collectProfiles(true); }, 4.5 * 1000);
+setInterval(() => { collectProfiles(true); }, 13 * 1000);
 
 setInterval(() => {
   // ローカルストレージにプロフィール情報を保存しておく
@@ -564,21 +615,14 @@ setInterval(() => {
 
 let logined = ref(false);
 let isPostOpen = ref(false);
-let myPubkey = "";
-let myRelaysCreatedAt = 0;
-let myReadRelays: string[] = [];
-let myWriteRelays: string[] = [];
+
 let firstReactionFetching = true;
 let firstReactionFetchedRelays = 0;
-let myFollows: string[] = [];
-let myBlockCreatedAt = 0;
-let myBlockList: string[] = [];
-let myBlockedEvents = new Set<string>();
 async function login() {
   // @ts-ignore
-  myPubkey = (await window.nostr?.getPublicKey()) ?? "";
+  myPubkey.value = (await window.nostr?.getPublicKey()) ?? "";
 
-  if (myPubkey) {
+  if (myPubkey.value) {
     logined.value = true;
     countOfDisplayEvents *= 2;
     collectMyRelay();
@@ -614,27 +658,27 @@ function collectMyRelay() {
     [
       {
         kinds: [3, 10002],
-        authors: [myPubkey],
+        authors: [myPubkey.value],
         limit: 1,
       },
     ],
     [... new Set(normalizeUrls([...feedRelays, ...profileRelays]))],
     (ev, _isAfterEose, _relayURL) => {
-      if (ev.kind === 3 && ev.content && myRelaysCreatedAt < ev.created_at) {
-        myReadRelays.slice(0);
-        myWriteRelays.slice(0);
-        myRelaysCreatedAt = ev.created_at;
+      if (ev.kind === 3 && ev.content && myRelaysCreatedAt.value < ev.created_at) {
+        myReadRelays.value.slice(0);
+        myWriteRelays.value.slice(0);
+        myRelaysCreatedAt.value = ev.created_at;
         const content = JSON.parse(ev.content);
         for (const r in content) {
-          myReadRelays.push(r);
+          myReadRelays.value.push(r);
           if (content[r].write) {
-            myWriteRelays.push(r);
+            myWriteRelays.value.push(r);
           }
         }
-      } else if (ev.kind === 10002 && myRelaysCreatedAt < ev.created_at) {
-        myReadRelays.slice(0);
-        myWriteRelays.slice(0);
-        myRelaysCreatedAt = ev.created_at;
+      } else if (ev.kind === 10002 && myRelaysCreatedAt.value < ev.created_at) {
+        myReadRelays.value.slice(0);
+        myWriteRelays.value.slice(0);
+        myRelaysCreatedAt.value = ev.created_at;
         for (let i = 0; i < ev.tags.length; ++i) {
           const t = ev.tags[i];
           if (t[0] === "r") {
@@ -643,10 +687,10 @@ function collectMyRelay() {
 
             if (t.length > 2) { m = t[2]; }
             if (m === "read") {
-              myReadRelays.push(r);
+              myReadRelays.value.push(r);
             } else {
-              myReadRelays.push(r);
-              myWriteRelays.push(r);
+              myReadRelays.value.push(r);
+              myWriteRelays.value.push(r);
             }
           }
         }
@@ -664,15 +708,15 @@ function collectMyBlockList() {
     [{
       // @ts-ignore
       kinds: [10000, 30000],
-      authors: [myPubkey],
+      authors: [myPubkey.value],
     }],
-    [... new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myReadRelays, ...myWriteRelays]))],
+    [... new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myReadRelays.value, ...myWriteRelays.value]))],
     async (ev, _isAfterEose, _relayURL) => {
       // @ts-ignore
-      if (myBlockCreatedAt < ev.created_at && ((ev.kind === 10000) || (ev.kind === 30000 && ev.tags[0][0] === "d" && ev.tags[0][1] === "mute"))) {
-        myBlockCreatedAt = ev.created_at;
+      if (myBlockCreatedAt.value < ev.created_at && ((ev.kind === 10000) || (ev.kind === 30000 && ev.tags[0][0] === "d" && ev.tags[0][1] === "mute"))) {
+        myBlockCreatedAt.value = ev.created_at;
         // @ts-ignore
-        const blockListJSON = (await window.nostr?.nip04.decrypt(myPubkey, ev.content)) || "[]";
+        const blockListJSON = (await window.nostr?.nip04.decrypt(myPubkey.value, ev.content)) || "[]";
         const blockList = JSON.parse(blockListJSON);
         let blocks: string[] = [];
         for (let i = 0; i < blockList.length; ++i) {
@@ -685,7 +729,15 @@ function collectMyBlockList() {
             blocks.push(ev.tags[i][1]);
           }
         }
-        myBlockList = [... new Set(blocks)];
+        myBlockList.value = [... new Set(blocks)];
+
+        eventsReceived.value.forEach((val, key) => {
+          if (myBlockList.value.includes(val.pubkey)) {
+            console.log("Removed event by blocked pubkey", val);
+            eventsReceived.value.delete(key);
+          }
+        });
+        eventsToSearch.value = eventsToSearch.value.filter((e) => (!myBlockList.value.includes(e.pubkey)));
       }
     },
     undefined,
@@ -696,17 +748,17 @@ function collectMyBlockList() {
 }
 
 async function collectFollowsAndSubscribe() {
-  const contactList = await pool.fetchAndCacheContactList(myPubkey);
-  myFollows = contactList.tags.filter((t) => (t[0] === 'p')).map((t) => (t[1]));
+  const contactList = await pool.fetchAndCacheContactList(myPubkey.value);
+  myFollows.value = contactList.tags.filter((t) => (t[0] === 'p')).map((t) => (t[1]));
 
   const subscribeMaxCount = 1000;
-  for (let begin = 0; begin < myFollows.length; begin += subscribeMaxCount) {
-    const followList = myFollows.slice(begin, subscribeMaxCount);
+  for (let begin = 0; begin < myFollows.value.length; begin += subscribeMaxCount) {
+    const followList = myFollows.value.slice(begin, subscribeMaxCount);
 
     pool.subscribe([
       { kinds: [1, 5], authors: followList, limit: 20 },
     ],
-      [...new Set(normalizeUrls(myReadRelays))],
+      [...new Set(normalizeUrls(myReadRelays.value))],
       async (ev, _isAfterEose, _relayURL) => {
         switch (ev.kind) {
           case 1:
@@ -719,7 +771,7 @@ async function collectFollowsAndSubscribe() {
                 cacheBlacklistEventIds.add(t[1]);
               }
             }
-            pool.publish(ev, normalizeUrls([...new Set([...feedRelays, ...myWriteRelays])]));
+            pool.publish(ev, normalizeUrls([...new Set([...feedRelays, ...myWriteRelays.value])]));
             break;
         }
       }
@@ -731,24 +783,24 @@ function subscribeReactions() {
   relayStatus.value = pool.getRelayStatuses();
 
   pool.subscribe([
-    { kinds: [1, 6, 7], "#p": [myPubkey], limit: countOfDisplayEvents / 10 },
-    { kinds: [6, 7], authors: [myPubkey], limit: countOfDisplayEvents / 10 },
+    { kinds: [1, 6, 7], "#p": [myPubkey.value], limit: countOfDisplayEvents / 10 },
+    { kinds: [6, 7], authors: [myPubkey.value], limit: countOfDisplayEvents / 10 },
   ],
-    [...new Set(normalizeUrls(myReadRelays))],
+    [...new Set(normalizeUrls(myReadRelays.value))],
     async (ev, _isAfterEose, _relayURL) => {
       addEvent(ev);
 
-      if (ev.pubkey !== myPubkey) {
+      if (ev.pubkey !== myPubkey.value) {
         if (
           !firstReactionFetching &&
           soundEffect.value &&
-          !myBlockList.includes(ev.pubkey) &&
+          !myBlockList.value.includes(ev.pubkey) &&
           events.value[events.value.length - 1].created_at < ev.created_at
         ) {
           console.log("reactioned", ev);
           playReactionSound();
         }
-      } if (ev.pubkey === myPubkey) {
+      } if (ev.pubkey === myPubkey.value) {
         for (let i = 0; i < ev.tags.length; ++i) {
           const t = ev.tags[i];
           if (t[0] === 'e') {
@@ -774,7 +826,7 @@ function subscribeReactions() {
     undefined,
     async () => {
       firstReactionFetchedRelays++;
-      if (firstReactionFetchedRelays > myReadRelays.length / 2) {
+      if (firstReactionFetchedRelays > myReadRelays.value.length / 2) {
         setTimeout(() => {
           firstReactionFetching = false;
         }, 10 * 1000);
@@ -806,7 +858,7 @@ async function postEvent(event: Nostr.Event) {
   // @ts-ignore
   event = await window.nostr?.signEvent(JSON.parse(JSON.stringify(event)));
 
-  pool.publish(event, normalizeUrls(myWriteRelays));
+  pool.publish(event, normalizeUrls(myWriteRelays.value));
 
   if (soundEffect.value) {
     playActionSound();
@@ -926,10 +978,10 @@ function checkSend(event: KeyboardEvent) {
 
 function searchAndBlockFilter() {
   events.value = eventsToSearch.value.filter((e) => {
-    const isBlocked = !npubModeText.value && myBlockList.includes(e.pubkey);
-    if (isBlocked && !myBlockedEvents.has(e.id)) {
+    const isBlocked = !npubModeText.value && myBlockList.value.includes(e.pubkey);
+    if (isBlocked && !myBlockedEvents.value.has(e.id)) {
       console.log("Blocked by pubkey:", e.pubkey, getProfile(e.pubkey).display_name, `kind=${e.kind}`, e.content);
-      myBlockedEvents.add(e.id);
+      myBlockedEvents.value.add(e.id);
     }
 
     const searchMatched = searchSubstring(e.content, searchWords.value);
@@ -999,10 +1051,6 @@ let relayStatus = ref(pool.getRelayStatuses());
 setInterval(() => {
   relayStatus.value = pool.getRelayStatuses();
 }, 1000);
-
-function normalizeUrls(urls: string[]): string[] {
-  return urls.map((url) => (Nostr.utils.normalizeURL(url)));
-}
 
 const konamiCode = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a'];
 const konamiIndex = ref(0);
@@ -1109,7 +1157,7 @@ function addRepostEvent(targetEvent: NostrEvent) {
     const confirmed = window.confirm(`リポストしますか？\n\n"${targetEvent.content}"`);
     if (confirmed) {
       const repost = createRepostEvent(targetEvent) as Nostr.Event;
-      pool.publish(targetEvent, normalizeUrls(myWriteRelays));
+      pool.publish(targetEvent, normalizeUrls(myWriteRelays.value));
       postEvent(repost);
       targetEvent.isReposted = true;
     }
@@ -1121,7 +1169,7 @@ function addFavEvent(targetEvent: NostrEvent) {
     const confirmed = window.confirm(`ふぁぼりますか？\n\n"${targetEvent.content}"`);
     if (confirmed) {
       const reaction = createFavEvent(targetEvent) as Nostr.Event;
-      pool.publish(targetEvent, normalizeUrls(myWriteRelays));
+      pool.publish(targetEvent, normalizeUrls(myWriteRelays.value));
       postEvent(reaction);
       targetEvent.isFavorited = true;
     }
@@ -1142,8 +1190,8 @@ function loggingStatistics(): void {
   console.log(JSON.stringify({
     eventsReceivedSize: eventsReceived.value.size,
     eventsToSearchSize: eventsToSearch.value.length,
-    blockedPubkeys: myBlockList.length,
-    eventsBlocked: myBlockedEvents.size,
+    blockedPubkeys: myBlockList.value.length,
+    eventsBlocked: myBlockedEvents.value.size,
     profilesSize: profiles.value.size,
     cacheMissHitPubkeysSize: cacheMissHitPubkeys.size,
     cacheMissHitEventIdsSize: cacheMissHitEventIds.size,
@@ -1229,7 +1277,8 @@ function gotoTop() {
     </div>
     <div class="p-index-body">
       <div class="p-index-profile" v-if="npubId && npubProfile">
-        <HeaderProfile :profile="npubProfile"></HeaderProfile>
+        <HeaderProfile :profile="npubProfile" :kind3-follow="npubKind3Follow" :kind3-relay="npubKind3Relay"
+          :kind10002="npubKind10002" :get-profile="getProfile"></HeaderProfile>
         <div class="p-index-profile-header">
           <FeedProfile v-bind:profile="getProfile(npubId)"></FeedProfile>
         </div>
@@ -1276,17 +1325,6 @@ function gotoTop() {
       </div>
       <div class="p-index-header" v-if="npubId">
         <div class="p-index-npub-prev"><a
-            :href="'?' + Nostr.nip19.npubEncode(npubId) + '&date=' + npubPrevMonth?.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' }).replace(/\//g, '')">前の月へ</a>
-        </div>
-        <div class="p-index-npub-now"><a
-            :href="'?' + Nostr.nip19.npubEncode(npubId) + '&date=' + npubMonth?.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' }).replace(/\//g, '')"><span>月全体へ</span></a>
-        </div>
-        <div class="p-index-npub-next"><a
-            :href="'?' + Nostr.nip19.npubEncode(npubId) + '&date=' + npubNextMonth?.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' }).replace(/\//g, '')">次の月へ</a>
-        </div>
-      </div>
-      <div class="p-index-header" v-if="npubId">
-        <div class="p-index-npub-prev"><a
             :href="'?' + Nostr.nip19.npubEncode(npubId) + '&date=' + npubDateYesterday?.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '')">前の日へ</a>
         </div>
         <div class="p-index-npub-now"><a
@@ -1295,6 +1333,17 @@ function gotoTop() {
             }}</span></a></div>
         <div class="p-index-npub-next"><a
             :href="'?' + Nostr.nip19.npubEncode(npubId) + '&date=' + npubDateTomorrow?.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '')">次の日へ</a>
+        </div>
+      </div>
+      <div class="p-index-header" v-if="npubId">
+        <div class="p-index-npub-prev"><a
+            :href="'?' + Nostr.nip19.npubEncode(npubId) + '&date=' + npubPrevMonth?.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' }).replace(/\//g, '')">前の月へ</a>
+        </div>
+        <div class="p-index-npub-now"><a
+            :href="'?' + Nostr.nip19.npubEncode(npubId) + '&date=' + npubMonth?.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' }).replace(/\//g, '')"><span>月全体へ</span></a>
+        </div>
+        <div class="p-index-npub-next"><a
+            :href="'?' + Nostr.nip19.npubEncode(npubId) + '&date=' + npubNextMonth?.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit' }).replace(/\//g, '')">次の月へ</a>
         </div>
       </div>
       <div :ref="(el) => { itemsBottom = el as HTMLElement }"></div>
