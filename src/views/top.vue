@@ -5,6 +5,8 @@ import { RelayPool } from "nostr-relaypool";
 import { NostrFetcher } from "nostr-fetch";
 import { useRoute } from "vue-router";
 
+import type { Nip07 } from "nostr-typedef";
+
 import { feedRelays, profileRelays, pool, normalizeUrls, NostrEvent, events, eventsToSearch, eventsReceived } from "../store";
 import {
   myPubkey,
@@ -13,7 +15,7 @@ import {
   myBlockCreatedAt, myBlockList, myBlockedEvents,
 } from "../profile";
 
-import { playActionSound, playReactionSound } from '../hooks/usePlaySound';
+import { playActionSound, playETWSSound, playReactionSound } from '../hooks/usePlaySound';
 import { getRandomProfile } from '../hooks/useEmojiProfiles';
 import { speakNote } from '../hooks/useSpeakNote';
 import { createFavEvent, createRepostEvent } from '../hooks/useFavRepost';
@@ -23,6 +25,7 @@ import IndexIntroControl from "../components/IndexIntroControl.vue";
 import SoundEffectControl from "../components/SoundEffectControl.vue";
 import AutoSpeechControl from "../components/AutoSpeechControl.vue";
 import SearchWordControl from "../components/SearchWordControl.vue";
+import AutoLoginControl from "../components/AutoLoginControl.vue";
 
 import RelayStatus from "../components/RelayStatus.vue";
 import RiverStatus from "../components/RiverStatus.vue";
@@ -35,62 +38,18 @@ import HeaderProfile from "../components/HeaderProfile.vue"
 const route = useRoute();
 let sushiMode = ref(false);
 let mahjongMode = ref(false);
+let robohashMode = ref("");
 
 let firstFetching = true;
 let autoSpeech = ref(false);
 let volume = ref("0.5");
 let searchWords = ref("");
+let searchEventType = ref("all");
 let soundEffect = ref(true);
 
 const totalNumberOfEventsToKeep = 10000;
 const initialNumberOfEventToGet = 500;
-let countOfDisplayEvents = 150;
-
-const japaneseFollowBotPubkey = "087c51f1926f8d3cb4ff45f53a8ee2a8511cfe113527ab0e87f9c5821201a61e";
-let japaneseUsers: string[] = [];
-function collectJapaneseUsers() {
-  const unsub = pool.subscribe(
-    [{ kinds: [3], authors: [japaneseFollowBotPubkey], limit: 1 }],
-    [...new Set(normalizeUrls(profileRelays))],
-    (ev, _isAfterEose, _relayURL) => {
-      if (ev.kind === 3 && ev.tags && npubRelaysCreatedAt < ev.created_at) {
-        japaneseUsers = ev.tags.filter((t) => (t[0] === 'p')).map((t) => (t[1]));
-      }
-    },
-    undefined,
-    undefined,
-    { unsubscribeOnEose: true }
-  );
-  setTimeout(() => { unsub() }, 10 * 1000);
-}
-collectJapaneseUsers();
-
-let isKirinoRiver = ref<boolean>(feedRelays.some((e) => (e.includes("relay-jp.nostr.wirednet.jp"))));
-const ryuusokuChanBotPubkey = "a3c13ef4c9eccfde01bd9326a2ab08b2ad7dc57f3b77db77723f8e2ad7ba24d6";
-let ryuusokuChanData = ref<[string, string][]>([["", ""]]);
-function collectRyuusokuChan() {
-  const poolRiver = new RelayPool(normalizeUrls(feedRelays), {});
-  poolRiver.subscribe(
-    // @ts-ignore
-    [{ kinds: [30078], authors: [ryuusokuChanBotPubkey], "#d": ["nostr-arrival-rate_kirino"], "#t": ["nostr-arrival-rate_kirino"], limit: 1 }],
-    [...new Set(normalizeUrls(feedRelays))],
-    (ev, _isAfterEose, _relayURL) => {
-      ryuusokuChanData.value.length = 0;
-      ryuusokuChanData.value = ev.tags.slice(-10) as [string, string][];
-      ryuusokuChanData.value.splice(ryuusokuChanData.value.length);
-    },
-    undefined,
-    undefined,
-    { unsubscribeOnEose: true }
-  );
-  setTimeout(() => { poolRiver.close(); }, 5 * 1000);
-}
-if (isKirinoRiver) {
-  collectRyuusokuChan();
-  setInterval(() => {
-    collectRyuusokuChan();
-  }, 30 * 1000);
-}
+let countOfDisplayEvents = 200;
 
 let noteId = ref<string | undefined>();
 let npubId = ref<string | undefined>();
@@ -116,6 +75,9 @@ watch(() => route.query, async (newQuery) => {
 
   sushiMode.value = (route.query.sushi === "on");
   mahjongMode.value = (route.query.mahjong === "on");
+  if (typeof route.query.robohash === "string" && route.query.robohash) {
+    robohashMode.value = route.query.robohash.toString();
+  }
   for (let key in newQuery) {
     if (key.match(nostrRegex)) {
       try {
@@ -153,6 +115,8 @@ watch(() => route.query, async (newQuery) => {
           npubDateOrMonth.value = "month";
         }
       }
+    } else if (key === 'q') {
+      searchWords.value = route.query[key]?.toString() || "";
     }
   }
 
@@ -167,6 +131,11 @@ watch(() => route.query, async (newQuery) => {
       }],
       [...new Set(normalizeUrls([...feedRelays, ...profileRelays]))],
       async (ev, _isAfterEose, _relayURL) => {
+        if (!Nostr.verifySignature(ev)) {
+          console.log('Invalid nostr event, signature invalid', ev);
+          return;
+        }
+
         if (ev.kind === 0 && profileCreatedAt < ev.created_at) {
           profileCreatedAt = ev.created_at;
           const profile = JSON.parse(ev.content);
@@ -195,15 +164,15 @@ watch(() => route.query, async (newQuery) => {
   if ((!npubId.value && !noteId.value) || (noteId.value) || (npubId.value && npubDateOrMonth.value === "")) {
     if (noteId.value) {
       // 指定されたイベントIDに関連する投稿を表示するスレッドモード
+      cutoffMode.value = false;
       pool.subscribe(
         [{
-          kinds: [1, 6],
           ids: [noteId.value],
         }, {
-          kinds: [1, 6, 7],
+          kinds: [1, 6, 7, 40, 41, 42],
           '#e': [noteId.value],
         }],
-        [...new Set(normalizeUrls([...feedRelays]))],
+        [... new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value]))],
         async (ev, _isAfterEose, _relayURL) => {
           addEvent(ev);
         },
@@ -219,11 +188,11 @@ watch(() => route.query, async (newQuery) => {
       // ユーザーの直近の投稿をプレビューするモード
       pool.subscribe(
         [{
-          kinds: [1, 6],
+          kinds: [1, 6, 7, 40, 41, 42],
           limit: countOfDisplayEvents / 2,
           authors: [npubId.value]
         }],
-        [...new Set(normalizeUrls([...feedRelays]))],
+        [... new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value]))],
         async (ev, _isAfterEose, _relayURL) => {
           addEvent(ev);
           npubModeText.value = `接続中のリレーから直近の ${events.value.length} 件の投稿を表示しています。(今日へ)`;
@@ -240,7 +209,7 @@ watch(() => route.query, async (newQuery) => {
       // 通常ののぞき窓グローバルモード
       pool.subscribe(
         [{
-          kinds: [1, 6],
+          kinds: [1, 6, 40, 41, 42, 1984],
           limit: initialNumberOfEventToGet,
         }],
         [...new Set(normalizeUrls([...feedRelays]))],
@@ -297,7 +266,7 @@ watch(() => route.query, async (newQuery) => {
 
     const unsub1 = pool.subscribe(
       [{
-        kinds: [1, 6],
+        kinds: [1, 6, 7],
         authors: [npubId.value],
         since,
         until,
@@ -322,6 +291,11 @@ watch(() => route.query, async (newQuery) => {
       [{ kinds: [3, 10002], authors: [npubId.value], limit: 1 }],
       [...new Set(normalizeUrls(searchRelays))],
       (ev, _isAfterEose, _relayURL) => {
+        if (!Nostr.verifySignature(ev)) {
+          console.log('Invalid nostr event, signature invalid', ev);
+          return;
+        }
+
         if (ev.kind === 3 && ev.content && npubRelaysCreatedAt < ev.created_at) {
           pool.publish(ev, normalizeUrls(feedRelays));
           npubReadRelays.slice(0);
@@ -424,7 +398,7 @@ async function collectUserEventsRange(pubkey: string, relays: string[], since: n
   const fetcher = NostrFetcher.init();
   const eventsIter = fetcher.allEventsIterator(
     [...new Set(normalizeUrls(relays))],
-    { kinds: [1, 5, 6], authors: [pubkey] },
+    { kinds: [1, 5, 6, 40, 41, 42], authors: [pubkey] },
     { since, until }
   );
 
@@ -453,49 +427,136 @@ async function collectUserEventsRange(pubkey: string, relays: string[], since: n
   }
 }
 
-function addEvent(event: NostrEvent | Nostr.Event): void {
+const japaneseFollowBotPubkey = "087c51f1926f8d3cb4ff45f53a8ee2a8511cfe113527ab0e87f9c5821201a61e";
+let japaneseUsers: string[] = [];
+function collectJapaneseUsers() {
+  const unsub = pool.subscribe(
+    [{ kinds: [3], authors: [japaneseFollowBotPubkey], limit: 1 }],
+    [...new Set(normalizeUrls(profileRelays))],
+    (ev, _isAfterEose, _relayURL) => {
+      if (!Nostr.verifySignature(ev)) {
+        console.log('Invalid nostr event, signature invalid', ev);
+        return;
+      }
+
+      if (ev.kind === 3 && ev.tags && npubRelaysCreatedAt < ev.created_at) {
+        japaneseUsers = ev.tags.filter((t) => (t[0] === 'p')).map((t) => (t[1]));
+      }
+    },
+    undefined,
+    undefined,
+    { unsubscribeOnEose: true }
+  );
+  setTimeout(() => { unsub() }, 10 * 1000);
+}
+collectJapaneseUsers();
+
+let isKirinoRiver = ref<boolean>(feedRelays.some((e) => (e.includes("relay-jp.nostr.wirednet.jp"))));
+const ryuusokuChanBotPubkey = "a3c13ef4c9eccfde01bd9326a2ab08b2ad7dc57f3b77db77723f8e2ad7ba24d6";
+let ryuusokuChanData = ref<[string, string][]>([["", ""]]);
+function collectRyuusokuChan() {
+  const poolRiver = new RelayPool();
+  poolRiver.subscribe(
+    [{ kinds: [30078], authors: [ryuusokuChanBotPubkey], "#d": ["nostr-arrival-rate_kirino"], limit: 1 }],
+    [...new Set(normalizeUrls(feedRelays).map((e) => (e + "?river=" + Math.floor((new Date()).getTime() / 1000))))],
+    (ev, _isAfterEose, _relayURL) => {
+      if (!Nostr.verifySignature(ev)) {
+        console.log('Invalid nostr event, signature invalid', ev);
+        return;
+      }
+
+      ryuusokuChanData.value.length = 0;
+      ryuusokuChanData.value = ev.tags.slice(-10) as [string, string][];
+      ryuusokuChanData.value.splice(ryuusokuChanData.value.length);
+    },
+    undefined,
+    undefined,
+    { unsubscribeOnEose: true }
+  );
+}
+if (isKirinoRiver) {
+  collectRyuusokuChan();
+  setInterval(() => {
+    collectRyuusokuChan();
+  }, 30 * 1000);
+}
+
+function addEvent(event: NostrEvent | Nostr.Event, addFeeds: boolean = true): void {
+  if (!Nostr.verifySignature(event)) {
+    console.log('Invalid nostr event, signature invalid', event);
+    return;
+  }
+
   if (eventsReceived.value.has(event.id) || event.kind === 3 || event.kind === 5) {
     return;
   }
-  eventsReceived.value.set(event.id, event as NostrEvent);
-  eventsToSearch.value = Nostr.utils.insertEventIntoDescendingList(eventsToSearch.value, event) as NostrEvent[];
+
+  const now = Math.floor((new Date()).getTime() / 1000);
+  const ev = event as unknown as NostrEvent;
+  eventsReceived.value.set(ev.id, ev);
+
+  if (addFeeds === false) {
+    return;
+  }
+
+  const rootKind = noteId.value ? getEvent(noteId.value)?.kind || 0 : 0;
+
+  if (rootKind === 30023) {
+    return;
+  } else if (noteId.value && 40 <= rootKind && rootKind <= 42) {
+    eventsToSearch.value = Nostr.utils.insertEventIntoDescendingList(eventsToSearch.value, ev) as NostrEvent[];
+  } else if (noteId.value) {
+    eventsToSearch.value = Nostr.utils.insertEventIntoAscendingList(eventsToSearch.value, ev) as NostrEvent[];
+  } else if (npubId.value) {
+    eventsToSearch.value = Nostr.utils.insertEventIntoDescendingList(eventsToSearch.value, ev) as NostrEvent[];
+  } else if (firstFetching) {
+    eventsToSearch.value = Nostr.utils.insertEventIntoDescendingList(eventsToSearch.value, ev) as NostrEvent[];
+  } else {
+    if (ev.created_at < now - 600) {
+      eventsToSearch.value = Nostr.utils.insertEventIntoDescendingList(eventsToSearch.value, ev) as NostrEvent[];
+    } else {
+      eventsToSearch.value.unshift(ev);
+    }
+  }
   if (cutoffMode.value) {
     eventsToSearch.value.slice(-totalNumberOfEventsToKeep);
   }
   searchAndBlockFilter();
   if (
     !firstFetching &&
-    autoSpeech.value &&
     events.value.some((obj) => {
       return obj.id === event.id;
     })
   ) {
-    speakNote(event, getProfile(event.pubkey), volume.value.toString());
+    if (autoSpeech.value) {
+      speakNote(event, getProfile(event.pubkey), volume.value.toString());
+    }
+    if (soundEffect.value && now - 60 < ev.created_at && event.pubkey === "9f77d173dcd94cc4243d36883b157f8c3283051dc6bd237b1c5ac400fb90cecb") {
+      playETWSSound();
+    }
   }
 }
 
 let cacheMissHitEventIds = new Set<string>();
 let cacheBlacklistEventIds = new Set<string>();
+let cacheMissHitCountByEventId = new Map<string, number>();
 
 function getEvent(id: string): Nostr.Event | undefined {
   if (myBlockedEvents.value.has(id)) {
     return undefined;
   }
-  if (eventsReceived.value.has(id)) {
-    const ev = eventsReceived.value.get(id);
-    if (ev) {
-      if (myBlockList.value.includes(ev.pubkey)) {
-        myBlockedEvents.value.add(ev.id);
-        console.log("Blocked by pubkey:", ev.pubkey, getProfile(ev.pubkey).display_name, `kind=${ev.kind}`, ev.content);
-        return undefined;
-      } else {
-        return eventsReceived.value.get(id);
-      }
+
+  const ev = eventsReceived.value.get(id);
+  if (ev) {
+    if (myBlockList.value.includes(ev.pubkey)) {
+      myBlockedEvents.value.add(ev.id);
+      console.log("Blocked by pubkey:", ev.pubkey, getProfile(ev.pubkey).display_name, `kind=${ev.kind}`, ev.content);
+      return undefined;
     }
-    return undefined;
+    return ev;
   } else {
     cacheMissHitEventIds.add(id);
-    return eventsReceived.value.get(id);
+    return undefined;
   }
 }
 
@@ -509,26 +570,60 @@ async function collectEvents() {
     return;
   }
 
+  const reqEventIds = new Set<string>(eventIds);
+  console.log(`collectEvents(${eventIds})`);
   const unsub = pool.subscribe(
-    [{
-      ids: eventIds
-    }],
+    [{ ids: eventIds }],
     [...new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value, ...npubReadRelays, ...npubWriteRelays]))],
-    async (ev, _isAfterEose, relayURL) => {
+    async (ev, _isAfterEose, _relayURL) => {
+      if (!Nostr.verifySignature(ev)) {
+        console.log('Invalid nostr event, signature invalid', ev);
+        return;
+      }
       cacheMissHitEventIds.delete(ev.id);
-      addEvent(ev);
+      reqEventIds.delete(ev.id);
 
-      if (!eventsReceived.value.has(ev.id) && ev.content.match(/[亜-熙ぁ-んァ-ヶ]/)) {
+      if (noteId.value) {
+        addEvent(ev);
+      } else {
+        addEvent(ev, false);
+      }
+
+      if (!eventsReceived.value.has(ev.id) && (ev.content.match(/[亜-熙ぁ-んァ-ヶ]/) || japaneseUsers.includes(ev.pubkey))) {
         pool.publish(ev, normalizeUrls(feedRelays));
       }
     },
     undefined,
-    undefined,
+    () => {
+      if (reqEventIds.size === 0) {
+        unsub();
+        clearTimeout(timeout);
+      }
+    },
     { unsubscribeOnEose: true }
   );
-  setTimeout(() => { unsub() }, 3 * 1000);
+  const timeout = setTimeout(() => {
+    unsub();
+    reqEventIds.forEach((id) => {
+      cacheMissHitCountByEventId.set(id, (cacheMissHitCountByEventId.get(id) ?? 0) + 1);
+      const cacheMissHitCount = cacheMissHitCountByEventId.get(id) ?? 0;
+      if (cacheMissHitCount === 3) {
+        eventsReceived.value.forEach((ev) => {
+          ev.tags.forEach((t) => {
+            if (ev.kind === 6 && t[0] === "e" && t[1] === id) {
+              addEvent(ev);
+            }
+          })
+        });
+      } else if (cacheMissHitCount > 64) {
+        cacheBlacklistEventIds.add(id);
+        console.log("Blocked by cache miss:", id, cacheMissHitCount);
+      }
+    });
+    console.log(`collectEvents(${timeout}) => Timeout`);
+  }, 5 * 1000);
 }
-setInterval(collectEvents, 0.6 * 1000);
+setInterval(collectEvents, 2 * 1000);
 
 // ローカルストレージからプロフィール情報を読み出しておく
 const profiles = ref(
@@ -545,25 +640,33 @@ type Profile = {
 };
 
 function getProfile(pubkey: string): Profile {
+  if (sushiMode.value || mahjongMode.value) {
+    return getRandomProfile(pubkey, sushiMode.value, mahjongMode.value);
+  }
+
+  let prof;
   if (!profiles.value.has(pubkey)) {
     cacheMissHitPubkeys.add(pubkey);
-
-    profiles.value.set(pubkey, {
+    prof = {
       pubkey: pubkey,
       picture: "https://placehold.jp/60x60.png",
       display_name: "",
       name: "",
       created_at: 0,
-    });
+    };
+  } else {
+    prof = profiles.value.get(pubkey);
   }
-  if (sushiMode.value || mahjongMode.value) {
-    return getRandomProfile(pubkey, sushiMode.value, mahjongMode.value);
+
+  if (robohashMode.value) {
+    prof.picture = `https://robohash.org/${Nostr.nip19.npubEncode(pubkey)}.png?set=${robohashMode.value}`
+    prof.created_at = 0;
   }
-  return profiles.value.get(pubkey);
+  return prof;
 }
 
 async function collectProfiles(force = false) {
-  if (!force || cacheMissHitPubkeys.size === 0) {
+  if (cacheMissHitPubkeys.size === 0 && !force) {
     return;
   }
 
@@ -575,10 +678,19 @@ async function collectProfiles(force = false) {
     }],
     [...new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value]))],
     async (ev, _isAfterEose, _relayURL) => {
+      if (!Nostr.verifySignature(ev)) {
+        console.log('Invalid nostr event, signature invalid', ev);
+        return;
+      }
+
       if (ev.kind === 0) {
         const content = JSON.parse(ev.content);
 
-        pool.publish(ev, feedRelays);
+        if (force && ev.created_at > Math.floor(new Date().getTime() / 1000) - forceProfileUpdateInterval * 2) {
+          pool.publish(ev, [...new Set(normalizeUrls([...feedRelays]))]);
+        } else if (cacheMissHitPubkeys.has(ev.pubkey)) {
+          pool.publish(ev, [...new Set(normalizeUrls([...feedRelays]))]);
+        }
         if (
           !profiles.value.has(ev.pubkey) ||
           profiles.value.get(ev.pubkey)?.created_at < ev.created_at
@@ -596,23 +708,45 @@ async function collectProfiles(force = false) {
       }
     },
     undefined,
-    undefined,
+    () => {
+      if (cacheMissHitPubkeys.size === 0) {
+        unsub();
+        clearTimeout(timeout);
+      }
+    },
     { unsubscribeOnEose: true }
   );
-  setTimeout(() => { unsub() }, 2 * 1000);
+  const timeout = setTimeout(() => {
+    unsub();
+    console.log(`collectProfiles(${timeout}) => Timeout, ${cacheMissHitPubkeys.size} pubkeys remain`);
+  }, 5 * 1000);
 }
-setInterval(() => { collectProfiles(false); }, 0.7 * 1000);
-setInterval(() => { collectProfiles(true); }, 13 * 1000);
+setInterval(() => { collectProfiles(false); }, 5 * 1000);
+
+const forceProfileUpdateInterval = 29;
+setInterval(() => { collectProfiles(true); }, forceProfileUpdateInterval * 1000);
 
 setInterval(() => {
   // ローカルストレージにプロフィール情報を保存しておく
-  const validProfiles = Array.from(profiles.value.entries()).filter((p) => (p[1].created_at != 0));
+  const diskProfiles = new Map<string, any>(JSON.parse(localStorage.getItem("profiles") ?? "[]"));
+
+  profiles.value.forEach((val, key) => {
+    if (val.created_at > 0) {
+      if (diskProfiles.has(key) && diskProfiles.get(key).created_at < val.created_at) {
+        diskProfiles.set(key, val);
+      } else {
+        diskProfiles.set(key, val);
+      }
+    }
+  });
+
   localStorage.setItem(
     "profiles",
-    JSON.stringify(validProfiles)
+    JSON.stringify(Array.from(profiles.value.entries()))
   );
-}, 2 * 1000);
+}, 8 * 1000);
 
+let windowNostr: Nip07.Nostr | null = null;
 let logined = ref(false);
 let isPostOpen = ref(false);
 
@@ -620,11 +754,33 @@ let firstReactionFetching = true;
 let firstReactionFetchedRelays = 0;
 async function login() {
   // @ts-ignore
-  myPubkey.value = (await window.nostr?.getPublicKey()) ?? "";
+  windowNostr = window.nostr;
+
+  myPubkey.value = (await windowNostr?.getPublicKey()) ?? "";
 
   if (myPubkey.value) {
     logined.value = true;
     countOfDisplayEvents *= 2;
+
+    if (windowNostr?.getRelays) {
+      const firstRelays = await windowNostr.getRelays();
+      console.log("NIP-07 First relay = ", JSON.stringify(firstRelays));
+
+      if (false && Object.keys(firstRelays).length === 0) {
+        window.alert("NIP-07拡張機能にリレーリストを設定するのをおすすめしています。");
+      }
+      for (const r in firstRelays) {
+        if (firstRelays[r].read) {
+          myReadRelays.value.push(r);
+        }
+        if (firstRelays[r].write) {
+          myWriteRelays.value.push(r);
+        }
+      }
+
+      console.log("NIP-07 First read relay: ", JSON.stringify(myReadRelays.value));
+      console.log("NIP-07 First write relay: ", JSON.stringify(myWriteRelays.value));
+    }
     collectMyRelay();
     collectMyBlockList();
     if (!noteId.value && !npubId.value) {
@@ -636,11 +792,13 @@ async function login() {
   }
 }
 
-function autoLogin() {
+const autoLogin = ref(localStorage.getItem("autoLogin") === "true");
+function tryAutoLogin() {
   let retryCount = 0;
   const checkNIP07Extention = setInterval(() => {
     // @ts-ignore
-    if (window.nostr) {
+    windowNostr = window.nostr;
+    if (windowNostr) {
       login();
       clearInterval(checkNIP07Extention);
     }
@@ -651,7 +809,9 @@ function autoLogin() {
     }
   }, 500);
 }
-autoLogin();
+if (autoLogin.value) {
+  tryAutoLogin();
+}
 
 function collectMyRelay() {
   const unsub = pool.subscribe(
@@ -662,8 +822,13 @@ function collectMyRelay() {
         limit: 1,
       },
     ],
-    [... new Set(normalizeUrls([...feedRelays, ...profileRelays]))],
+    [... new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myReadRelays.value, ...myWriteRelays.value]))],
     (ev, _isAfterEose, _relayURL) => {
+      if (!Nostr.verifySignature(ev)) {
+        console.log('Invalid nostr event, signature invalid', ev);
+        return;
+      }
+
       if (ev.kind === 3 && ev.content && myRelaysCreatedAt.value < ev.created_at) {
         myReadRelays.value.slice(0);
         myWriteRelays.value.slice(0);
@@ -706,17 +871,18 @@ function collectMyRelay() {
 function collectMyBlockList() {
   const unsub = pool.subscribe(
     [{
-      // @ts-ignore
       kinds: [10000, 30000],
       authors: [myPubkey.value],
     }],
     [... new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myReadRelays.value, ...myWriteRelays.value]))],
     async (ev, _isAfterEose, _relayURL) => {
-      // @ts-ignore
       if (myBlockCreatedAt.value < ev.created_at && ((ev.kind === 10000) || (ev.kind === 30000 && ev.tags[0][0] === "d" && ev.tags[0][1] === "mute"))) {
         myBlockCreatedAt.value = ev.created_at;
-        // @ts-ignore
-        const blockListJSON = (await window.nostr?.nip04.decrypt(myPubkey.value, ev.content)) || "[]";
+
+        let blockListJSON = "[]";
+        if (windowNostr && windowNostr.nip04) {
+          blockListJSON = (await windowNostr?.nip04.decrypt(myPubkey.value, ev.content))
+        }
         const blockList = JSON.parse(blockListJSON);
         let blocks: string[] = [];
         for (let i = 0; i < blockList.length; ++i) {
@@ -733,7 +899,7 @@ function collectMyBlockList() {
 
         eventsReceived.value.forEach((val, key) => {
           if (myBlockList.value.includes(val.pubkey)) {
-            console.log("Removed event by blocked pubkey", val);
+            console.log("Removed event by blocked pubkey", val.pubkey, getProfile(val.pubkey).display_name, `kind=${val.kind}`, val.content);
             eventsReceived.value.delete(key);
           }
         });
@@ -755,11 +921,15 @@ async function collectFollowsAndSubscribe() {
   for (let begin = 0; begin < myFollows.value.length; begin += subscribeMaxCount) {
     const followList = myFollows.value.slice(begin, subscribeMaxCount);
 
-    pool.subscribe([
-      { kinds: [1, 5], authors: followList, limit: 20 },
-    ],
+    pool.subscribe(
+      [{ kinds: [1, 5], authors: followList, limit: 20 }],
       [...new Set(normalizeUrls(myReadRelays.value))],
       async (ev, _isAfterEose, _relayURL) => {
+        if (!Nostr.verifySignature(ev)) {
+          console.log('Invalid nostr event, signature invalid', ev);
+          return;
+        }
+
         switch (ev.kind) {
           case 1:
             addEvent(ev);
@@ -774,7 +944,8 @@ async function collectFollowsAndSubscribe() {
             pool.publish(ev, normalizeUrls([...new Set([...feedRelays, ...myWriteRelays.value])]));
             break;
         }
-      }
+      },
+      0
     );
   }
 }
@@ -790,6 +961,7 @@ function subscribeReactions() {
     async (ev, _isAfterEose, _relayURL) => {
       addEvent(ev);
 
+      // 自分宛のリアクションが来ていたら音を鳴らす
       if (ev.pubkey !== myPubkey.value) {
         if (
           !firstReactionFetching &&
@@ -800,7 +972,10 @@ function subscribeReactions() {
           console.log("reactioned", ev);
           playReactionSound();
         }
-      } if (ev.pubkey === myPubkey.value) {
+      }
+
+      // 自分のリアクション(リポスト、ファボ)があればイベントに色をつけておく
+      if (ev.pubkey === myPubkey.value) {
         for (let i = 0; i < ev.tags.length; ++i) {
           const t = ev.tags[i];
           if (t[0] === 'e') {
@@ -808,16 +983,8 @@ function subscribeReactions() {
 
             if (ev.kind === 6) {
               eventsToSearch.value.filter((ee) => (ee.id === et)).map((ee) => (ee.isReposted = true));
-              const ef = eventsReceived.value.get(et);
-              if (ef) {
-                ef.isReposted = true;
-              }
             } else if (ev.kind === 7) {
               eventsToSearch.value.filter((ee) => (ee.id === et)).map((ee) => (ee.isFavorited = true));
-              const ef = eventsReceived.value.get(et);
-              if (ef) {
-                ef.isFavorited = true;
-              }
             }
           }
         }
@@ -835,7 +1002,8 @@ function subscribeReactions() {
   );
 }
 
-let draftEvent = ref(Nostr.getBlankEvent(Nostr.Kind.Text));
+type BlankEvent = ReturnType<typeof Nostr.getBlankEvent>;
+let draftEvent = ref<BlankEvent>(Nostr.getBlankEvent(Nostr.Kind.Text));
 let editingTags = ref(Nostr.getBlankEvent(Nostr.Kind.Text));
 async function post() {
   if (!draftEvent.value.content) {
@@ -847,7 +1015,6 @@ async function post() {
   const ev = JSON.parse(JSON.stringify(draftEvent.value));
   ev.created_at = Math.floor(Date.now() / 1000);
 
-  // @ts-ignore
   await postEvent(ev);
 
   isPostOpen.value = false;
@@ -855,21 +1022,25 @@ async function post() {
 }
 
 async function postEvent(event: Nostr.Event) {
-  // @ts-ignore
-  event = await window.nostr?.signEvent(JSON.parse(JSON.stringify(event)));
+  if (windowNostr) {
+    event = await windowNostr.signEvent(JSON.parse(JSON.stringify(event)));
 
-  pool.publish(event, normalizeUrls(myWriteRelays.value));
+    pool.publish(event, normalizeUrls(myWriteRelays.value));
 
-  if (soundEffect.value) {
-    playActionSound();
+    if (soundEffect.value) {
+      playActionSound();
+    }
+
+    addEvent(event);
   }
-
-  addEvent(event);
 }
 
 function openReplyPost(reply: Nostr.Event): void {
   // 投稿欄をすべて空っぽにする
   draftEvent.value = Nostr.getBlankEvent(Nostr.Kind.Text);
+  if (reply.kind === 42) {
+    draftEvent.value = Nostr.getBlankEvent(Nostr.Kind.ChannelMessage);
+  }
   const parsedTags = Nostr.nip10.parse(reply);
   if (parsedTags.root) {
     draftEvent.value.tags.push(['e', parsedTags.root.id, "", "root"]);
@@ -893,11 +1064,15 @@ function openReplyPost(reply: Nostr.Event): void {
     draftEvent.value.tags.push(['e', reply.id, "", "root"]);
   }
 
+  const pTags = new Set<string>();
   for (let i = 0; i < parsedTags.profiles.length; ++i) {
     const p = parsedTags.profiles[i];
-    draftEvent.value.tags.push(['p', p.pubkey]);
+    pTags.add(p.pubkey);
   }
-  draftEvent.value.tags.push(['p', reply.pubkey]);
+  pTags.add(reply.pubkey);
+  pTags.forEach((p) => {
+    draftEvent.value.tags.push(['p', p]);
+  });
 
   isPostOpen.value = true;
 }
@@ -906,7 +1081,7 @@ function openQuotePost(repost: Nostr.Event): void {
   // 投稿欄をすべて空っぽにする
   draftEvent.value = Nostr.getBlankEvent(Nostr.Kind.Text);
   // 投稿欄にnoteidを追加する
-  draftEvent.value.content = "\n\nnostr:" + Nostr.nip19.noteEncode(repost.id);
+  draftEvent.value.content = "\nnostr:" + Nostr.nip19.noteEncode(repost.id);
 
   isPostOpen.value = true;
 }
@@ -919,7 +1094,12 @@ watch(isPostOpen, async (isPostOpened) => {
     if (noteTextarea.value) {
       noteTextarea.value.selectionStart = 0;
       noteTextarea.value.selectionEnd = 0;
+
+      if (searchWords.value) {
+        draftEvent.value.content = searchWords.value + " " + draftEvent.value.content;
+      }
     }
+    extractTags();
   }
 });
 
@@ -937,7 +1117,7 @@ function extractTags() {
             editingTags.value.tags.push(['e', d.data.id])
           } break;
           case "note": {
-            editingTags.value.tags.push(['e', d.data])
+            editingTags.value.tags.push(['e', d.data, "mention"])
           } break;
           case "nprofile": {
             editingTags.value.tags.push(['p', d.data.pubkey]);
@@ -978,15 +1158,61 @@ function checkSend(event: KeyboardEvent) {
 
 function searchAndBlockFilter() {
   events.value = eventsToSearch.value.filter((e) => {
-    const isBlocked = !npubModeText.value && myBlockList.value.includes(e.pubkey);
-    if (isBlocked && !myBlockedEvents.value.has(e.id)) {
-      console.log("Blocked by pubkey:", e.pubkey, getProfile(e.pubkey).display_name, `kind=${e.kind}`, e.content);
-      myBlockedEvents.value.add(e.id);
+    let isBlocked = false;
+    if (myBlockList.value.includes(e.pubkey)) {
+      isBlocked = true;
+      if (!myBlockedEvents.value.has(e.id)) {
+        console.log("Blocked by pubkey:", e.pubkey, getProfile(e.pubkey).display_name, `kind=${e.kind}`, e.content);
+        myBlockedEvents.value.add(e.id);
+      }
+    }
+    if (cacheBlacklistEventIds.has(e.id)) {
+      isBlocked = true;
     }
 
-    const searchMatched = searchSubstring(e.content, searchWords.value);
+    if (isBlocked) {
+      return false;
+    }
 
-    return !isBlocked && searchMatched;
+    switch (searchEventType.value) {
+      case "all": {
+        return searchSubstring(e.content, searchWords.value);
+      }
+      case "fav": {
+        return e.kind === 7;
+      }
+      case "repost": {
+        return e.kind === 6;
+      }
+      case "chat": {
+        if (e.kind === 40 || e.kind === 41 || e.kind === 42) {
+          return searchSubstring(e.content, searchWords.value);
+        }
+        return false;
+      }
+      case "reply": {
+        if (e.pubkey !== myPubkey.value && (e.kind === 1 || e.kind === 42)) {
+          for (let i = 0; i < e.tags.length; ++i) {
+            const t = e.tags[i];
+            if (t[0] === "p" && t[1] === myPubkey.value) {
+              return searchSubstring(e.content, searchWords.value);
+            }
+          }
+        }
+        return false;
+      }
+      case "reaction": {
+        if (e.pubkey !== myPubkey.value && (e.kind === 6 || e.kind === 7)) {
+          for (let i = 0; i < e.tags.length; ++i) {
+            const t = e.tags[i];
+            if (t[0] === "p" && t[1] === myPubkey.value) {
+              return true;
+            }
+          }
+        }
+        return false;
+      }
+    }
   });
   if (cutoffMode.value) {
     events.value = events.value.slice(0, countOfDisplayEvents);
@@ -1222,15 +1448,14 @@ const observer = new IntersectionObserver((entries) => {
 });
 
 function scrollToItem(el: HTMLElement) {
-  // const offsetY = (window.innerHeight - el.getBoundingClientRect().height) / 2;
   const offsetY = 80;
-  const yCoodinate = el.getBoundingClientRect().top + window.pageYOffset - offsetY;
-  window.scrollTo({ top: yCoodinate, behavior: 'smooth' });
+  const yCoordinate = el.getBoundingClientRect().top + document.documentElement.scrollTop - offsetY;
+  window.scrollTo({ top: yCoordinate, behavior: 'smooth' });
 }
 
 function scrollToItemTop(el: HTMLElement) {
-  const yCoodinate = el.getBoundingClientRect().top + window.pageYOffset;
-  window.scrollTo({ top: yCoodinate, behavior: 'smooth' });
+  const yCoordinate = el.getBoundingClientRect().top + document.documentElement.scrollTop;
+  window.scrollTo({ top: yCoordinate, behavior: 'smooth' });
 }
 
 function moveToItemById(id: string): void {
@@ -1268,9 +1493,11 @@ function gotoTop() {
       <div class="p-index-heading__inner">
         <IndexTitleControl :feed-relays="feedRelays"></IndexTitleControl>
         <IndexIntroControl :is-logined="logined" :login="login"></IndexIntroControl>
+        <AutoLoginControl v-model:autoLogin="autoLogin"></AutoLoginControl>
         <AutoSpeechControl v-model:auto-speech="autoSpeech" v-model:volume="volume"></AutoSpeechControl>
         <SoundEffectControl v-model:soundEffect="soundEffect"></SoundEffectControl>
-        <SearchWordControl v-model:search-words="searchWords" v-on:change="searchAndBlockFilter()"></SearchWordControl>
+        <SearchWordControl v-model:search-words="searchWords" v-model:event-type="searchEventType"
+          v-on:change="searchAndBlockFilter()"></SearchWordControl>
         <RiverStatus v-bind:data="ryuusokuChanData" v-if="isKirinoRiver"></RiverStatus>
         <RelayStatus v-bind:relays="relayStatus"></RelayStatus>
       </div>
@@ -1311,14 +1538,17 @@ function gotoTop() {
           :class="{ 'c-feed-item': true, 'c-feed-item-focused': (showFocusBorder && focusedItemId === e.id) }"
           :ref="(el) => { if (el) { items[e.id] = el as HTMLElement } }"
           @click="{ focusedItemId = e.id; focusItemIndex = events.findIndex((e) => (e.id === focusedItemId)) }">
-          <FeedProfile v-bind:profile="getProfile(e.pubkey)"></FeedProfile>
-          <FeedReplies v-bind:event="e" :get-profile="getProfile" :get-event="getEvent" v-if="e.kind !== 6"></FeedReplies>
-          <FeedContent v-bind:event="e" :get-profile="getProfile" :get-event="getEvent" :speak-note="speakNote"
-            :volume="volume" :is-logined="logined" :post-event="postEvent" :open-reply-post="openReplyPost"
-            :open-quote-post="openQuotePost" :add-fav-event="addFavEvent" :add-repost-event="addRepostEvent">
+          <FeedProfile :key="'profile' + e.id" v-bind:profile="getProfile(e.pubkey)" v-if="getProfile(e.pubkey)">
+          </FeedProfile>
+          <FeedReplies :key="'replies' + e.id" v-bind:event="e" :get-profile="getProfile" :get-event="getEvent"
+            v-if="e.kind !== 6"></FeedReplies>
+          <FeedContent :key="'content' + e.id" v-bind:event="e" :get-profile="getProfile" :get-event="getEvent"
+            :speak-note="speakNote" :volume="volume" :is-logined="logined" :post-event="postEvent"
+            :open-reply-post="openReplyPost" :open-quote-post="openQuotePost" :add-fav-event="addFavEvent"
+            :add-repost-event="addRepostEvent">
           </FeedContent>
-          <FeedFooter v-bind:event="e" :speak-note="speakNote" :volume="volume" :is-logined="logined"
-            :post-event="postEvent" :get-profile="getProfile" :open-reply-post="openReplyPost"
+          <FeedFooter :key="'footer' + e.id" v-bind:event="e" :speak-note="speakNote" :volume="volume"
+            :is-logined="logined" :post-event="postEvent" :get-profile="getProfile" :open-reply-post="openReplyPost"
             :open-quote-post="openQuotePost" :add-fav-event="addFavEvent" :add-repost-event="addRepostEvent"
             :ref="(el) => { if (el) { itemFooters?.set(e.id, el) } }"></FeedFooter>
         </div>
@@ -1372,8 +1602,8 @@ function gotoTop() {
       <div class="c-post-tags">
         <FeedReplies v-bind:event="draftEvent" :get-profile="getProfile" :get-event="getEvent"></FeedReplies>
         <FeedReplies v-bind:event="editingTags" :get-profile="getProfile" :get-event="getEvent"></FeedReplies>
-        <span class="p-index-post__help">メンションしたいときは<code>nostr:</code>の後に<code>npub文字列</code>を貼り付けてください。<br />
-          引用リポストするときは<code>nostr:note文字列</code>で投稿IDを貼り付けてください。</span>
+        <span
+          class="p-index-post__help">メンションしたいときは<code>nostr:</code>の後に<code>npub文字列</code>を貼り付けてください。<br />引用リポストするときは<code>nostr:note文字列</code>で投稿IDを貼り付けてください。</span>
       </div>
       <div class="p-index-post__editer">
         <div class="p-index-post__textarea">

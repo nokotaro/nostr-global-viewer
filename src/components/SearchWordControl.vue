@@ -1,33 +1,75 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed } from "vue"
 
 const props = withDefaults(
   defineProps<{
-    searchWords: string;
+    searchWords: string,
+    eventType: string,
   }>(),
   {
-    searchWords: "" // デフォルト値を指定
+    searchWords: "", // デフォルト値を指定
+    eventType: "all", // デフォルト値を指定
   }
-);
+)
 
 const emit = defineEmits<{
-  (e: 'update:searchWords', searchWords: string): void
-}>();
+  (e: "update:searchWords", searchWords: string): void,
+  (e: "update:eventType", eventType: string): void,
+}>()
 
 const searchWords = computed({
   get: () => props.searchWords,
-  set: (value) => { // 値に変更があると呼ばれるsetter
-    emit('update:searchWords', value);
+  set: (value) => {
+    // 値に変更があると呼ばれるsetter
+    emit("update:searchWords", value)
   },
 });
 
+const eventType = computed({
+  get: () => props.eventType,
+  set: (value) => {
+    // 値に変更があると呼ばれるsetter
+    emit("update:eventType", value);
+    console.log("eventType", value);
+  },
+});
 </script>
 
 <template>
   <div class="p-index-search">
-    <h2 class="p-index-search__head">検索</h2>
+    <h2 class="p-index-search__head">絞り込み</h2>
     <div class="p-index-search__body">
-      <input class="p-index-search__input" type="search" id="search" v-model="searchWords" />
+      <div>
+        <label for="search">検索キーワード: </label>
+        <input class="p-index-search__input" type="search" id="search" v-model="searchWords"
+          :disabled="eventType !== 'all' && eventType !== 'reply' && eventType !== 'chat'" />
+      </div>
+      <br>
+      <div>
+        <div>種別: </div>
+        <input class="" type="radio" name="eventType" id="eventTypeAll" value="all" v-model="eventType" checked />
+        <label for="eventTypeAll">全て</label>
+      </div>
+      <div>
+        <input class="" type="radio" name="eventType" id="eventTypeReply" value="reply" v-model="eventType" />
+        <label for="eventTypeReply">自分宛の返信</label>
+      </div>
+      <div>
+        <input class="" type="radio" name="eventType" id="eventTypeReaction" value="reaction" v-model="eventType" />
+        <label for="eventTypeReaction">自分宛のリアクション</label>
+      </div>
+      <!-- div>
+        <input class="" type="radio" name="eventType" id="eventTypeFav" value="fav" v-model="eventType" />
+        <label for="eventTypeFav">みんなのファボ</label>
+      </div -->
+      <div>
+        <input class="" type="radio" name="eventType" id="eventTypeRepost" value="repost" v-model="eventType" />
+        <label for="eventTypeRepost">みんなのリポスト</label>
+      </div>
+      <div>
+        <input class="" type="radio" name="eventType" id="eventTypeChat" value="chat" v-model="eventType" />
+        <label for="eventTypeChat">グローバルチャット</label>
+      </div>
     </div>
   </div>
 </template>
@@ -36,7 +78,7 @@ const searchWords = computed({
 .p-index-search {
   background: rgba(0, 0, 0, 0.6);
   border-radius: 6px;
-  padding: 12px;
+  padding: 8px;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -44,7 +86,8 @@ const searchWords = computed({
 
   &__head {
     color: #ffffff;
-    font-size: 14px;
+    font-size: 13px;
+    width: 6em;
   }
 
   &__body {

@@ -3,11 +3,12 @@
   line-height: 1.25;
   font-size: small;
   font-weight: 400;
+  font-feature-settings: 'palt';
 
   color-scheme: light dark;
   color: rgba(255, 255, 255, 0.87);
-  /* background: rgb(14, 36, 121); */
-  background: linear-gradient(90deg, rgba(14,36,121,1) 0%, rgba(9,9,121,1) 35%, rgba(125,61,243,1) 100%);
+  background: rgb(14, 36, 121);
+  /* background: linear-gradient(90deg, rgba(14,36,121,1) 0%, rgba(9,9,121,1) 35%, rgba(125,61,243,1) 100%); */
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -16,7 +17,6 @@
 }
 
 a {
-  font-weight: 500;
   color: #646cff;
   text-decoration: inherit;
 }

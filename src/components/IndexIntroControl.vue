@@ -9,16 +9,19 @@ const props = defineProps({
     required: true,
   },
 });
+
+// const nip07exists = ref('nostr' in window);
+const nip07exists = true;
 </script>
 <template>
-  <div class="p-index-signin" v-if="!props.isLogined">
+  <div class="p-index-signin" v-if="!props.isLogined" :style="(!nip07exists) ? { display: 'none' } : {}">
     <h2 class="p-index-signin__head">この画面からつぶやく</h2>
     <div class="p-index-signin__body">
       <input class="p-index-signin__btn" type="button" value="NIP-07でログイン" v-on:click="(_$event) => props.login()" />
     </div>
   </div>
   <div class="p-index-intro" v-if="!props.isLogined">
-    <h2 class="p-index-intro__head">はじめに</h2>
+    <h2 class="p-index-intro__head"><span>はじめに</span></h2>
     <p class="p-index-intro__text">Nostr を始めてみたくなった方は</p>
     <p class="p-index-intro__text">
       <a href="https://welcome.nostr-jp.org/" rel="noopener" target="_blank" class="p-index-intro__btn">Welcome to
@@ -30,10 +33,14 @@ const props = defineProps({
         rel="noopener" target="_blank" class="p-index-intro__btn">はじめてのNostr【はじめての方はこちら】</a>
     </p>
     <p class="p-index-intro__text">などを起点に調べてる見ると面白いと思います。</p>
+    <h2 class="p-index-intro__head"><span>このリレーについて</span></h2>
+    <p class="p-index-intro__text">Nostrクライアントからこのリレーを利用する際は
+      <code>wss://nostr-relay.nokotaro.com</code>
+      を接続リレーに追加してください。
+    </p>
     <h2 class="p-index-intro__head">ライセンス、ソースコードなど</h2>
-    <p class="p-index-intro__text">
-      このサイトのソースコードは<a href="https://github.com/nokotaro/nostr-global-viewer" class="p-index-intro__text-link"
-        target="_blank">GitHub</a>にあります。
+    <p class="p-index-intro__text">このサイトのソースコードは<a href="https://github.com/nokotaro/nostr-global-viewer"
+        class="p-index-intro__text-link" target="_blank">GitHub</a>にあります。
     </p>
     <p class="p-index-intro__text">
       <a href="https://awayuki.github.io/emojis.html" target="_blank" class="p-index-intro__text-link">SUSHIYUKI
@@ -74,6 +81,7 @@ const props = defineProps({
     border-radius: 2rem;
     transition: all 0.4s;
     border: none;
+    line-height: 1;
     cursor: pointer;
 
     &:hover {
@@ -90,25 +98,31 @@ const props = defineProps({
   }
 
   &__head {
-    font-size: 1.5rem;
-    color: #ffffff;
+    font-size: 1.4rem;
+    color: gold;
     display: flex;
     gap: 0.4rem;
     align-items: center;
-    margin: 1em 0 0 0;
+    margin: 2rem 0 1rem 0;
 
     &::before {
       content: "";
-      width: 2em;
+      flex-grow: 1;
       height: 2px;
-      background-color: #ffffff;
+      background-color: gold;
     }
 
     &::after {
       content: "";
-      width: 2em;
+      flex-grow: 1;
       height: 2px;
-      background-color: #ffffff;
+      background-color: gold;
+    }
+
+    span {
+      width: max-content;
+      flex-grow: 0;
+      flex-shrink: 0;
     }
   }
 
@@ -131,10 +145,13 @@ const props = defineProps({
   &__btn {
     background-color: #fc5fa1;
     color: #ffffff;
-    display: inline-block;
+    display: block;
     padding: 0.5rem 1.4rem;
     border-radius: 2rem;
     transition: all 0.4s;
+    line-height: 1;
+    margin: 0 auto;
+    width: max-content;
   }
 
   &__btn:hover {

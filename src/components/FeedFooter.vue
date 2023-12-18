@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import * as Nostr from "nostr-tools";
+import { pool } from "../store";
 
 import { broadcastEventById } from '../actions/EventBroadcast';
 
@@ -117,7 +118,8 @@ function getLinkUrl(): string {
       </span>
     </p>
     <p class="c-feed-reply">
-      <span v-if="isLogined && props.event.kind == 1" @click="(_$event) => { openReplyPost(props.event) }">
+      <span v-if="isLogined && (props.event.kind == 1 || props.event.kind == 42)"
+        @click="(_$event) => { openReplyPost(props.event) }">
         <mdicon name="reply" :height="14" title="Reply" />
       </span>
     </p>
@@ -131,13 +133,30 @@ function getLinkUrl(): string {
         <mdicon name="code-json" :width="14" :height="14" title="Show event json" />
       </span>
     </p>
+    <p class="c-feed-event-search">
+      <span>
+        <a target="_blank"
+          :href="'https://koteitan.github.io/nostr-post-checker/?eid=' + event.id + '&kind=' + event.kind + '&relay=' + pool.getRelayStatuses().map((r) => (r[0])).join(';')">
+          <mdicon name="table-search" :width="14" :height="14" title="Search event in relays" />
+        </a>
+      </span>
+    </p>
+  </div>
+  <div class="c-feed-footer2">
     <p class="c-feed-date">
       <span>
         <a target="_blank" :href="'?' + Nostr.nip19.noteEncode(props.event.id)">
           {{ new Date(props.event.created_at * 1000).toLocaleString("ja-JP", {
-            month: "numeric", day: "numeric", hour:
+            year: "numeric", month: "numeric", day: "numeric", hour:
               "numeric", minute: "numeric"
           }) }}
+        </a>
+        <span>&nbsp;</span>
+        <a target="_blank"
+          :href="'https://nosaray.vercel.app/?dur=5m' + '&since='
+            + new Date(props.event.created_at * 1000).toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-')
+            + 'T' + new Date(props.event.created_at * 1000 - 4 * 60 * 1000).toLocaleString('ja-JP', { hour: '2-digit', minute: '2-digit' })">
+          <mdicon name="timer-marker" :width="14" :height="14" title="Open timelines in Nosaray" />
         </a>
         <span>&nbsp;</span>
         <a target="_blank"
@@ -164,16 +183,27 @@ function getLinkUrl(): string {
   width: 100%;
 }
 
+.c-feed-footer2 {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  width: 100%;
+}
+
 .c-feed-footer p {
   font-size: 14px;
-  margin: 0.7em 0 0.2em 0;
+  margin: 0.7em 0 0 0;
+}
+
+.c-feed-footer2 p {
+  font-size: 14px;
+  margin: 0.2em 0 0.2em 0;
 }
 
 .c-feed {
   white-space: pre-wrap;
   word-wrap: break-word;
   word-break: break-all;
-  padding: 0.4rem 0 0 0;
   margin: 0;
   text-align: left;
 
@@ -217,6 +247,11 @@ function getLinkUrl(): string {
   }
 
   &-json {
+    color: #213547;
+    flex-basis: 18px;
+  }
+
+  &-event-search a {
     color: #213547;
     flex-basis: 18px;
   }
