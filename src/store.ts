@@ -3,7 +3,7 @@ import { ref } from "vue";
 import * as Nostr from "nostr-tools";
 import { RelayPool } from "nostr-relaypool";
 
-export const feedRelays = ["wss://bostr.nokotaro.work"];
+export const feedRelays = ["wss://bostr.nokotaro.com"];
 
 export const profileRelays = [
   "wss://bostr.nokotaro.work/",
