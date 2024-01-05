@@ -47,9 +47,7 @@ let searchWords = ref("");
 let searchEventType = ref("all");
 let soundEffect = ref(true);
 
-const totalNumberOfEventsToKeep = 10000;
-const initialNumberOfEventToGet = 500;
-let countOfDisplayEvents = 200;
+let countOfDisplayEvents = ref<number>(20);
 
 let noteId = ref<string | undefined>();
 let npubId = ref<string | undefined>();
@@ -189,7 +187,7 @@ watch(() => route.query, async (newQuery) => {
       pool.subscribe(
         [{
           kinds: [1, 6, 7, 40, 41, 42, 30315],
-          limit: countOfDisplayEvents / 2,
+          limit: countOfDisplayEvents.value * 10,
           authors: [npubId.value]
         }],
         [... new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value]))],
@@ -210,7 +208,7 @@ watch(() => route.query, async (newQuery) => {
       pool.subscribe(
         [{
           kinds: [1, 6, 40, 41, 42, 1984, 30315],
-          limit: initialNumberOfEventToGet,
+          limit: countOfDisplayEvents.value * 25,
         }],
         [...new Set(normalizeUrls([...feedRelays]))],
         async (ev, _isAfterEose, _relayURL) => {
@@ -407,13 +405,7 @@ async function collectUserEventsRange(pubkey: string, relays: string[], since: n
       const usertext = profile.display_name + profile.name + ev.content;
       const japaneseRegex = /[亜-熙ぁ-んァ-ヶ]/;
       if (ev.kind === 5) {
-        for (let i = 0; i < ev.tags.length; ++i) {
-          const t = ev.tags[i];
-          if (t[0] === "e") {
-            cacheBlacklistEventIds.add(t[1]);
-          }
-        }
-        pool.publish(ev, [...new Set(normalizeUrls([...relays, ...feedRelays, ...myWriteRelays.value]))]);
+        addDeletedEvent(ev);
       } else if (!eventsReceived.value.has(ev.id) && (usertext.match(japaneseRegex) || japaneseUsers.includes(ev.pubkey))) {
         pool.publish(ev, normalizeUrls(feedRelays));
       }
@@ -487,7 +479,11 @@ function addEvent(event: NostrEvent | Nostr.Event, addFeeds: boolean = true): vo
     return;
   }
 
-  if (eventsReceived.value.has(event.id) || event.kind === 3 || event.kind === 5) {
+  if (event.kind === 5) {
+    addDeletedEvent(event);
+    return;
+  }
+  if (eventsReceived.value.has(event.id) || event.kind === 3) {
     return;
   }
 
@@ -519,6 +515,7 @@ function addEvent(event: NostrEvent | Nostr.Event, addFeeds: boolean = true): vo
     }
   }
   if (cutoffMode.value) {
+    const totalNumberOfEventsToKeep = 500 + countOfDisplayEvents.value * 2;
     eventsToSearch.value.slice(-totalNumberOfEventsToKeep);
   }
   searchAndBlockFilter();
@@ -540,6 +537,19 @@ function addEvent(event: NostrEvent | Nostr.Event, addFeeds: boolean = true): vo
 let cacheMissHitEventIds = new Set<string>();
 let cacheBlacklistEventIds = new Set<string>();
 let cacheMissHitCountByEventId = new Map<string, number>();
+
+function addDeletedEvent(ev: Nostr.Event) {
+  cacheBlacklistEventIds.add(ev.id);
+
+  for (let i = 0; i < ev.tags.length; ++i) {
+    const t = ev.tags[i];
+    if (t[0] === "e") {
+      eventsToSearch.value = eventsToSearch.value.filter((ee) => (ee.id !== t[1]));
+      eventsReceived.value.set(t[1], ev);
+    }
+  }
+  pool.publish(ev, [...new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value, ...npubReadRelays, ...npubWriteRelays]))]);
+}
 
 function getEvent(id: string): Nostr.Event | undefined {
   if (myBlockedEvents.value.has(id)) {
@@ -572,7 +582,7 @@ async function collectEvents() {
   const reqEventIds = new Set<string>(eventIds);
   console.log(`collectEvents(${eventIds})`);
   const unsub = pool.subscribe(
-    [{ ids: eventIds }],
+    [{ ids: eventIds }, { kinds: [5], '#e': eventIds }],
     [...new Set(normalizeUrls([...feedRelays, ...profileRelays, ...myWriteRelays.value, ...myReadRelays.value, ...npubReadRelays, ...npubWriteRelays]))],
     async (ev, _isAfterEose, _relayURL) => {
       if (!Nostr.verifySignature(ev)) {
@@ -582,7 +592,9 @@ async function collectEvents() {
       cacheMissHitEventIds.delete(ev.id);
       reqEventIds.delete(ev.id);
 
-      if (noteId.value) {
+      if (ev.kind === 5) {
+        addDeletedEvent(ev);
+      } else if (noteId.value) {
         addEvent(ev);
       } else {
         addEvent(ev, false);
@@ -759,7 +771,6 @@ async function login() {
 
   if (myPubkey.value) {
     logined.value = true;
-    countOfDisplayEvents *= 2;
 
     if (windowNostr?.getRelays) {
       const firstRelays = await windowNostr.getRelays();
@@ -934,13 +945,7 @@ async function collectFollowsAndSubscribe() {
             addEvent(ev);
             break;
           case 5:
-            for (let i = 0; i < ev.tags.length; ++i) {
-              const t = ev.tags[i];
-              if (t[0] === "e") {
-                cacheBlacklistEventIds.add(t[1]);
-              }
-            }
-            pool.publish(ev, normalizeUrls([...new Set([...feedRelays, ...myWriteRelays.value])]));
+            addDeletedEvent(ev);
             break;
         }
       },
@@ -953,8 +958,8 @@ function subscribeReactions() {
   relayStatus.value = pool.getRelayStatuses();
 
   pool.subscribe([
-    { kinds: [1, 6, 7], "#p": [myPubkey.value], limit: countOfDisplayEvents / 10 },
-    { kinds: [6, 7], authors: [myPubkey.value], limit: countOfDisplayEvents / 10 },
+    { kinds: [1, 6, 7], "#p": [myPubkey.value], limit: countOfDisplayEvents.value * 5 },
+    { kinds: [6, 7], authors: [myPubkey.value], limit: countOfDisplayEvents.value * 5 },
   ],
     [...new Set(normalizeUrls(myReadRelays.value))],
     async (ev, _isAfterEose, _relayURL) => {
@@ -1214,7 +1219,7 @@ function searchAndBlockFilter() {
     }
   });
   if (cutoffMode.value) {
-    events.value = events.value.slice(0, countOfDisplayEvents);
+    events.value = events.value.slice(0, countOfDisplayEvents.value);
   }
   if (events.value.length === 0) {
     events.value[0] = {
@@ -1330,12 +1335,10 @@ function handleKeydownShortcuts(e: KeyboardEvent): void {
     moveToItemByIndex(newFocusIndex);
   } else if (e.key === 'h') {
     gotoTop();
+  } else if (e.key === 'm') {
+    showMore();
   } else if (e.key === 'g') {
-    focusItemIndex.value = events.value.length - 1;
-    focusedItemId.value = events.value[focusItemIndex.value].id;
-    if (itemsBottom.value) {
-      scrollToItemTop(itemsBottom.value);
-    }
+    gotoBottom();
   } else if (e.key === 'r' && logined.value && !isPostOpen.value) {
     const targetEvent = events.value.find((e) => (e.id === focusedItemId.value));
     if (targetEvent && targetEvent.kind === 1) {
@@ -1484,6 +1487,21 @@ function gotoTop() {
     scrollToItemTop(itemsTop.value);
   }
 }
+
+function gotoBottom() {
+  focusItemIndex.value = events.value.length - 1;
+  focusedItemId.value = events.value[focusItemIndex.value].id;
+  if (itemsBottom.value) {
+    scrollToItemTop(itemsBottom.value);
+  }
+}
+
+function showMore() {
+  gotoBottom();
+
+  countOfDisplayEvents.value += 20;
+  searchAndBlockFilter();
+}
 </script>
 
 <template>
@@ -1551,6 +1569,8 @@ function gotoTop() {
             :open-quote-post="openQuotePost" :add-fav-event="addFavEvent" :add-repost-event="addRepostEvent"
             :ref="(el) => { if (el) { itemFooters?.set(e.id, el) } }"></FeedFooter>
         </div>
+        <div class="p-index-footer"><button v-on:click="() => { showMore() }">もっと表示する ({{ countOfDisplayEvents
+        }}件表示中)</button></div>
       </div>
       <div class="p-index-header" v-if="npubId">
         <div class="p-index-npub-prev"><a
@@ -1655,6 +1675,20 @@ function gotoTop() {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
+}
+
+.p-index-footer {
+  margin-top: 5px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.p-index-footer button {
+  flex-grow: 1;
+  border-radius: 4px;
+  background-color: #ffffff;
+  color: #050a30;
 }
 
 .p-index-npub-prev {
