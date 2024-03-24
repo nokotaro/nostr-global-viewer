@@ -7,7 +7,6 @@ export const feedRelays = ["wss://nostr-relay.nokotaro.com"];
 
 export const profileRelays = [
   "wss://bostr.nokotaro.com/",
-  "wss://bostr.nokotaro.work/",
   "wss://ipv6.nostr.wirednet.jp/",
   "wss://nos.lol/",
   "wss://nostr.wine/",
